@@ -45,8 +45,20 @@ targets:
     platform: iOS
     sources:
       - path: DroneStackBridge
-    info:
-      path: DroneStackBridge/Info.plist
+    # SENGAJA TIDAK ada blok `info:` di sini.
+    #
+    # `info:` adalah mekanisme XcodeGen SENDIRI untuk MENGELOLA/MENSINTESIS
+    # Info.plist (biasanya dipasangkan dengan sub-key `properties:` untuk
+    # menulis key langsung dari project.yml). Menuliskannya BERSAMAAN dengan
+    # `INFOPLIST_FILE` + `GENERATE_INFOPLIST_FILE: NO` di bawah membuat
+    # keduanya bentrok — dan yang menang adalah `info:`, yang mensintesis
+    # plist BARU dari build settings (persis seperti Xcode 15+ men-generate
+    # Info.plist otomatis) dan MENGABAIKAN SELURUH isi file
+    # DroneStackBridge/Info.plist, termasuk DJISDKAppKey, izin Bluetooth,
+    # Local Network, dan ATS. App tetap ter-build sukses (makanya lolos CI)
+    # tapi App Key-nya kosong di dalam .app — gejalanya baru terlihat saat
+    # app dijalankan, bukan saat build. Cukup `INFOPLIST_FILE` di bawah untuk
+    # menunjuk file fisik kita apa adanya.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.dronestack.bridge
