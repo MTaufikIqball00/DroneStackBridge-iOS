@@ -161,8 +161,12 @@ final class MediaSyncManager {
             let destDir = self.photoDirectory()
 
             // Buang video/RAW/panorama, dan lewati yang sudah ada di iPhone.
+            // `fileName` bertipe String non-optional di SDK iOS (berbeda dari
+            // sisi Android yang bisa mengembalikan null), jadi tidak di-bind
+            // dengan `guard let`.
             let pending = files.filter { file in
-                guard let name = file.fileName, self.isJPEG(fileName: name) else { return false }
+                let name = file.fileName
+                guard self.isJPEG(fileName: name) else { return false }
                 return !self.alreadyDownloaded(name: name, in: destDir)
             }
 
@@ -201,7 +205,7 @@ final class MediaSyncManager {
         }
 
         let file = pending[index]
-        let name = file.fileName ?? "foto_\(index).jpg"
+        let name = file.fileName
         progress("Mengunduh \(index + 1)/\(total): \(name)")
 
         download(file: file, named: name, to: destDir) { [weak self] savedURL in
@@ -238,10 +242,13 @@ final class MediaSyncManager {
         var buffer = Data()
         var settled = false
 
-        // Catatan bila compiler mengeluh soal nama metode: importer Swift
-        // memetakan `-fetchFileDataWithOffset:updateQueue:updateBlock:` menjadi
-        // `fetchFileData(withOffset:updateQueue:updateBlock:)`.
-        file.fetchFileData(withOffset: 0, updateQueue: downloadQueue) { data, isComplete, error in
+        // Di ObjC selektornya `-fetchFileDataWithOffset:updateQueue:updateBlock:`
+        // (terverifikasi di docs/API Reference SDK). Importer Swift MEMBUANG kata
+        // "File" karena mengulang nama kelas pemiliknya (DJIMediaFile), sehingga
+        // menjadi `fetchData(withOffset:updateQueue:updateBlock:)` — bukan
+        // `fetchFileData(...)` seperti dugaan awal, yang ditolak compiler dengan
+        // "value of type 'DJIMediaFile' has no member 'fetchFileData'".
+        file.fetchData(withOffset: 0, updateQueue: downloadQueue) { data, isComplete, error in
             guard !settled else { return }
 
             if let error = error {

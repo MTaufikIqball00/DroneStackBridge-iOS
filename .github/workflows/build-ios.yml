@@ -82,6 +82,21 @@ jobs:
       # repo, sedangkan anotasi bisa dibaca siapa pun lewat API publik. Tanpa
       # ini, setiap kegagalan harus disalin-tempel manual dari browser sebelum
       # bisa didiagnosis — dan itu sudah terjadi tiga kali.
+      # Jaring pengaman untuk penamaan API DJI.
+      #
+      # Beberapa metode ObjC berganti nama saat diimpor ke Swift (aturan "omit
+      # needless words"), dan tidak ada cara memastikannya dari dokumentasi —
+      # dokumentasi hanya memuat nama ObjC. Daripada menebak lalu menunggu satu
+      # putaran CI penuh untuk tahu jawabannya, deklarasi aslinya langsung
+      # dibaca dari header framework dan diterbitkan sebagai anotasi.
+      - name: Dump deklarasi API DJI yang rawan salah nama
+        run: |
+          H="Pods/DJI-SDK-iOS/iOS_Mobile_SDK/DJISDK.framework/Headers"
+          ls "$H" > /dev/null 2>&1 || { echo "::notice::HDR header tidak ditemukan di $H"; exit 0; }
+          grep -hn -A2 "fetchFileDataWithOffset\|isVirtualStickControlModeAvailable\|sendVirtualStickFlightControlData" \
+            "$H"/DJIMediaFile.h "$H"/DJIFlightController.h 2>/dev/null \
+            | head -20 | while IFS= read -r l; do echo "::notice::HDR ${l}"; done
+
       - name: Diagnostik workspace (skema yang terbaca Xcode)
         run: |
           xcodebuild -list -workspace DroneStackBridge.xcworkspace > /tmp/list.txt 2>&1 || true

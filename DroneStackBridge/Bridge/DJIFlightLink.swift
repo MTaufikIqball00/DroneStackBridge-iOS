@@ -210,7 +210,9 @@ final class DJIFlightLink: NSObject {
     /// menukar urutan argumen di constructor FlightControlData.
     func sendControl(forward: Double, right: Double, yawRate: Double, verticalRate: Double) {
         guard let fc = flightController, isVirtualStickEnabled else { return }
-        guard fc.isVirtualStickControlModeAvailable else { return }
+        // METODE, bukan properti — di ObjC ini `-isVirtualStickControlModeAvailable`
+        // yang diimpor Swift sebagai fungsi, jadi tanda kurungnya wajib.
+        guard fc.isVirtualStickControlModeAvailable() else { return }
 
         let data = DJIVirtualStickFlightControlData(
             pitch: Float(right),
