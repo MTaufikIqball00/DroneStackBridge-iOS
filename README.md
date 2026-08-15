@@ -106,35 +106,56 @@ di bawah.
 ### Persiapan (di rumah/kantor, SEBELUM ke lapangan)
 
 1. **Laptop:** `./scripts/start.sh --dji`
-2. **iPhone masih di WiFi/data seluler biasa** (jangan disambungkan ke RC dulu).
+2. **Aktifkan/perbarui portproxy Windows** — WAJIB setiap kali laptop/WSL
+   di-restart, karena IP internal WSL2 berubah tiap kali itu terjadi. Di WSL:
+   ```bash
+   hostname -I
+   ```
+   Salin IP yang muncul (mis. `172.24.180.182`), lalu di **PowerShell sebagai
+   Administrator** di Windows:
+   ```powershell
+   netsh interface portproxy delete v4tov4 listenport=9090 listenaddress=0.0.0.0
+   netsh interface portproxy add v4tov4 listenport=9090 listenaddress=0.0.0.0 connectport=9090 connectaddress=<IP_DARI_HOSTNAME_I>
+   ```
+   Rule ini yang meneruskan trafik dari **adapter Windows manapun** (WiFi
+   biasa, WiFi RC Spark, dst — `0.0.0.0` berarti "semua") ke rosbridge yang
+   sebenarnya jalan di dalam WSL2. Tanpa langkah ini, HP tidak akan pernah
+   bisa mencapai rosbridge dari jaringan manapun.
+3. **iPhone masih di WiFi/data seluler biasa** (jangan disambungkan ke RC dulu).
    Buka app → tunggu **Registrasi SDK** hijau. Ini WAJIB dilakukan sebelum
    WiFi iPhone pindah ke jaringan RC, karena registrasi butuh internet dan
    jaringan RC Spark biasanya tidak tersambung ke internet sama sekali.
-3. **Jangan force-close app** setelah langkah 2 — registrasi hanya diverifikasi
+4. **Jangan force-close app** setelah langkah 3 — registrasi hanya diverifikasi
    sekali per sesi berjalan, tapi kalau app di-restart selagi WiFi sudah pindah
    ke jaringan RC (tanpa internet), registrasi bisa gagal lagi.
-4. Jaga-jaga: aktifkan **Settings → Cellular → Wi-Fi Assist** di iPhone. Kalau
+5. Jaga-jaga: aktifkan **Settings → Cellular → Wi-Fi Assist** di iPhone. Kalau
    nanti app terlanjur harus dibuka ulang saat WiFi sudah di jaringan RC, iOS
    otomatis melimpahkan trafik yang butuh internet ke data seluler.
 
 ### Di lapangan
 
-5. Nyalakan **Spark** dan **Remote Controller** — RC mulai memancarkan WiFi-nya.
-6. **Di iPhone:** Settings → Wi-Fi → sambungkan ke jaringan RC Spark (nama &
+6. Nyalakan **Spark** dan **Remote Controller** — RC mulai memancarkan WiFi-nya.
+7. **Di iPhone:** Settings → Wi-Fi → sambungkan ke jaringan RC Spark (nama &
    password biasanya tertera di stiker RC). Kembali ke app — status
    **Drone tersambung** akan menyala hijau.
-7. **Di laptop:** sambungkan WiFi Windows ke jaringan RC Spark yang sama.
-8. **Cek IP baru laptop** di jaringan itu (WSL2 ikut IP Windows berkat
-   *mirrored networking* — lihat bagian Jaringan di bawah):
-   ```bash
-   hostname -I
+8. **Di laptop:** sambungkan WiFi Windows ke jaringan RC Spark yang sama.
+9. **Cari IP laptop di jaringan itu — WAJIB dari sisi WINDOWS, BUKAN dari WSL.**
+   `hostname -I` di WSL memberi IP internal WSL2 yang **tidak bisa dijangkau
+   HP sama sekali** — itu cuma dipakai sebagai target di langkah 2 di atas,
+   bukan yang diketik ke app. Cek IP yang benar lewat **Command Prompt/
+   PowerShell Windows** (persis seperti app Android Anda selama ini):
+   ```cmd
+   ipconfig
    ```
-9. **Di app:** ganti isian **IP** dengan IP baru dari langkah 8, port tetap
-   `9090` → **Sambungkan Jembatan**. Log app harus menunjukkan
-   "Virtual Stick aktif" lalu "Jembatan AKTIF".
-10. **Dashboard** (`http://localhost:3000` dibuka langsung di laptop — tidak
+   Cari adapter yang **sedang aktif** menuju jaringan RC Spark (biasanya
+   "Wireless LAN adapter Wi-Fi", tapi namanya bisa berubah — cocokkan dengan
+   yang statusnya "Connected" ke SSID RC Spark), pakai **IPv4 Address**-nya.
+10. **Di app:** ganti isian **IP** dengan IP dari langkah 9 (dari `ipconfig`,
+    BUKAN `hostname -I`), port tetap `9090` → **Sambungkan Jembatan**. Log
+    app harus menunjukkan "Virtual Stick aktif" lalu "Jembatan AKTIF".
+11. **Dashboard** (`http://localhost:3000` dibuka langsung di laptop — tidak
     perlu IP jaringan RC untuk ini) akan menampilkan telemetry.
-11. **Setelah misi selesai** — tekan **Sync Foto ke Backend** di app. Foto
+12. **Setelah misi selesai** — tekan **Sync Foto ke Backend** di app. Foto
     diunduh dari kartu SD drone ke iPhone, lalu diunggah sebagai satu batch;
     app menampilkan `job_id` yang bisa dipantau di `GET /jobs/{id}`.
 
@@ -147,18 +168,32 @@ di bawah.
 
 - **iPhone dan laptop harus berada di jaringan WiFi yang SAMA** — dalam
   praktiknya berarti WiFi yang dipancarkan RC Spark (lihat topologi di atas).
-- **Laptop memakai WSL2** — tanpa perbaikan, IP WSL2 beda dari IP Windows dan
-  berubah tiap ganti jaringan/restart. Sudah diperbaiki dengan *mirrored
-  networking* di `C:\Users\<user>\.wslconfig`:
-  ```ini
-  [wsl2]
-  networkingMode=mirrored
-  ```
-  lalu `wsl --shutdown`. Dengan mode ini, IP WSL2 otomatis ikut IP Windows di
-  jaringan APA PUN yang aktif — termasuk saat Windows pindah ke WiFi RC Spark,
-  tidak perlu konfigurasi ulang portproxy tiap ganti jaringan. Cek cepat di
-  WSL: `hostname -I` (IP terkini) dan `ss -tlnp | grep 9090` (pastikan
-  rosbridge listen).
+- **Laptop memakai WSL2, dan di lingkungan ini WSL2 jalan mode NAT KLASIK, BUKAN
+  mirrored networking** (dicek langsung 2026-08-15 — `.wslconfig` tidak ada/tidak
+  aktif, IP WSL2 di rentang NAT `172.24.x.x`, terpisah total dari IP asli
+  Windows). Konsekuensinya:
+  - **`hostname -I` di WSL TIDAK PERNAH bisa dipakai sebagai IP yang diketik
+    ke app** — itu IP internal yang tidak terjangkau dari luar WSL2 sama
+    sekali. IP yang benar untuk app selalu dari **`ipconfig` di Windows**
+    (CMD/PowerShell), cari adapter yang sedang aktif ke jaringan yang sama
+    dengan HP.
+  - Rosbridge hanya bisa dijangkau dari luar lewat **portproxy manual**
+    (`netsh interface portproxy`, lihat langkah 2 di atas), yang meneruskan
+    dari `0.0.0.0:9090` di Windows ke IP internal WSL2. Rule ini **basi
+    setiap kali WSL/laptop restart** (IP internal WSL2 berubah) — harus
+    dihapus & dibuat ulang dengan IP baru dari `hostname -I` setiap kali itu
+    terjadi.
+  - Kalau di lain waktu ingin mencoba mirrored networking (supaya tidak perlu
+    portproxy manual lagi), buat `C:\Users\<user>\.wslconfig`:
+    ```ini
+    [wsl2]
+    networkingMode=mirrored
+    ```
+    lalu `wsl --shutdown` dan **verifikasi ulang** dengan `hostname -I` di WSL
+    vs `ipconfig` di Windows — kalau angkanya SAMA, mirrored aktif dan
+    portproxy tidak diperlukan lagi. Jangan asumsikan aktif tanpa mengecek
+    langsung; itu yang sebelumnya bikin dokumentasi ini salah.
+  - Cek cepat status rosbridge: `ss -tlnp | grep 9090` di WSL.
 - iOS akan menampilkan prompt izin **Local Network** saat pertama menyambung
   ke jaringan baru. Harus diizinkan; kalau tertolak, WebSocket gagal tanpa
   pesan yang jelas.
