@@ -75,9 +75,23 @@ jobs:
       - name: Pasang pod (DJI-SDK-iOS)
         run: pod install --repo-update
 
+      # Kedua langkah di bawah menerbitkan ringkasan hasilnya sebagai ANOTASI
+      # (`::notice::` / `::error::`), bukan sekadar menulis ke log.
+      #
+      # Alasannya praktis: mengunduh log mentah lewat API menuntut hak admin
+      # repo, sedangkan anotasi bisa dibaca siapa pun lewat API publik. Tanpa
+      # ini, setiap kegagalan harus disalin-tempel manual dari browser sebelum
+      # bisa didiagnosis — dan itu sudah terjadi tiga kali.
+      - name: Diagnostik workspace (skema yang terbaca Xcode)
+        run: |
+          xcodebuild -list -workspace DroneStackBridge.xcworkspace > /tmp/list.txt 2>&1 || true
+          cat /tmp/list.txt
+          head -20 /tmp/list.txt | while IFS= read -r l; do echo "::notice::LIST ${l}"; done
+
       - name: Build & archive (tanpa tanda tangan)
         run: |
-          xcodebuild archive \
+          set -o pipefail
+          if ! xcodebuild archive \
             -workspace DroneStackBridge.xcworkspace \
             -scheme DroneStackBridge \
             -configuration Release \
@@ -86,7 +100,17 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM=""
+            DEVELOPMENT_TEAM="" 2>&1 | tee /tmp/build.log
+          then
+            # Galat kompilasi Swift muncul sebagai baris "...error: ...".
+            grep -E "error:" /tmp/build.log | head -6 \
+              | while IFS= read -r l; do echo "::error::${l}"; done
+            # Beberapa kegagalan (mis. skema/workspace) tidak memakai kata
+            # "error:", jadi ekor log ikut diterbitkan sebagai jaring pengaman.
+            tail -4 /tmp/build.log \
+              | while IFS= read -r l; do echo "::error::EKOR ${l}"; done
+            exit 1
+          fi
 
       - name: Bungkus jadi .ipa
         run: |
