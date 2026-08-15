@@ -24,31 +24,39 @@ on:
 
 jobs:
   build:
-    # Pin runner, JANGAN "macos-latest" — Apple/GitHub mengganti image default
-    # tanpa pemberitahuan, dan itu bisa mematahkan build tanpa ada satu baris
-    # pun kode yang berubah di sisi kita.
-    runs-on: macos-14
+    # macos-15, BUKAN macos-14.
+    #
+    # Ini keputusan berdasarkan kegagalan nyata, bukan preferensi: dua run
+    # pertama gagal dengan "The project cannot be opened because it is in a
+    # future Xcode project file format (77)". XcodeGen dari Homebrew selalu
+    # versi terbaru dan menulis format project 77, yang hanya bisa dibaca
+    # Xcode 16.3+. Image macos-14 TIDAK memuat Xcode 16 sama sekali — Xcode
+    # tertingginya 15.4 — sehingga memilih "Xcode terbaru yang tersedia" pun
+    # tetap menghasilkan 15.4 dan tetap gagal. Yang perlu diganti image-nya,
+    # bukan cara memilih Xcode-nya.
+    runs-on: macos-15
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Pilih Xcode TERBARU yang tersedia di runner
-        # BUKAN versi tetap (mis. Xcode_15.4.app). Alasannya bukti nyata, bukan
-        # teori: run pertama workflow ini gagal karena XcodeGen dari Homebrew
-        # SELALU memakai versi terbarunya sendiri dan menulis format project
-        # (object version) mengikuti Xcode TERBARU yang ia kenal — sementara kita
-        # memaksa `xcode-select` ke Xcode 15.4, yang gagal membuka format itu
-        # ("cannot be opened because it is in a future Xcode project file
-        # format"). Runner macos-14 GitHub biasanya menyediakan beberapa versi
-        # Xcode sekaligus; baris ini memilih yang paling baru secara otomatis
-        # supaya dua alat itu (XcodeGen & Xcode) selalu sejalan, apa pun versi
-        # yang sedang dikirim GitHub bulan ini.
+        # DEVELOPER_DIR ikut ditulis ke GITHUB_ENV, tidak cukup `xcode-select`
+        # saja: bila runner menetapkan DEVELOPER_DIR, variabel itu MENANG atas
+        # xcode-select dan langkah build berikutnya diam-diam memakai Xcode lama
+        # — persis gejala yang bikin run kedua tetap memanggil Xcode_15.4
+        # padahal langkah pemilihannya dilaporkan sukses.
+        #
+        # Daftar Xcode ikut dicetak supaya kalau suatu saat gagal lagi, versi
+        # yang benar-benar tersedia langsung kelihatan di log tanpa menebak.
         run: |
+          echo "Xcode yang tersedia di runner ini:"
+          ls -d /Applications/Xcode*.app
           LATEST_XCODE=$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1)
           if [ -z "$LATEST_XCODE" ]; then LATEST_XCODE=/Applications/Xcode.app; fi
           echo "Memilih: $LATEST_XCODE"
           sudo xcode-select -s "$LATEST_XCODE"
-          xcodebuild -version
+          echo "DEVELOPER_DIR=$LATEST_XCODE/Contents/Developer" >> "$GITHUB_ENV"
+          "$LATEST_XCODE/Contents/Developer/usr/bin/xcodebuild" -version
 
       - name: Pasang XcodeGen
         run: brew install xcodegen
