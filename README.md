@@ -95,14 +95,48 @@ open DroneStackBridge.xcworkspace
 
 ## Cara memakai di lapangan
 
-1. **Laptop:** `./scripts/start.sh --dji` — skrip mencetak IP yang harus diisi
-2. **iPhone:** sambungkan ke remote Spark (kabel USB), tunggu status
-   *Drone tersambung* hijau
-3. Isi **IP laptop** + port `9090`, tekan **Sambungkan Jembatan**
-4. **Dashboard** (`http://<ip-laptop>:3000`) akan langsung menampilkan telemetry
-5. **Setelah misi selesai** — tekan **Sync Foto ke Backend**. Foto diunduh dari
-   kartu SD drone ke iPhone, lalu diunggah sebagai satu batch; app menampilkan
-   `job_id` yang bisa dipantau di `GET /jobs/{id}`.
+**PENTING soal topologi jaringan:** Remote Controller DJI Spark tersambung ke
+HP lewat **WiFi**, BUKAN kabel USB (beda dari Mavic/Phantom yang pakai USB).
+Karena itu WiFi iPhone "terpakai penuh" untuk bicara ke RC dan tidak bisa
+sekaligus jadi anggota WiFi/LAN laptop untuk rosbridge — keduanya butuh WiFi,
+dan iPhone cuma punya satu radio WiFi. Solusinya: **laptop ikut bergabung ke
+WiFi yang dipancarkan RC Spark**, bukan sebaliknya. Detail & urutan lengkap ada
+di bawah.
+
+### Persiapan (di rumah/kantor, SEBELUM ke lapangan)
+
+1. **Laptop:** `./scripts/start.sh --dji`
+2. **iPhone masih di WiFi/data seluler biasa** (jangan disambungkan ke RC dulu).
+   Buka app → tunggu **Registrasi SDK** hijau. Ini WAJIB dilakukan sebelum
+   WiFi iPhone pindah ke jaringan RC, karena registrasi butuh internet dan
+   jaringan RC Spark biasanya tidak tersambung ke internet sama sekali.
+3. **Jangan force-close app** setelah langkah 2 — registrasi hanya diverifikasi
+   sekali per sesi berjalan, tapi kalau app di-restart selagi WiFi sudah pindah
+   ke jaringan RC (tanpa internet), registrasi bisa gagal lagi.
+4. Jaga-jaga: aktifkan **Settings → Cellular → Wi-Fi Assist** di iPhone. Kalau
+   nanti app terlanjur harus dibuka ulang saat WiFi sudah di jaringan RC, iOS
+   otomatis melimpahkan trafik yang butuh internet ke data seluler.
+
+### Di lapangan
+
+5. Nyalakan **Spark** dan **Remote Controller** — RC mulai memancarkan WiFi-nya.
+6. **Di iPhone:** Settings → Wi-Fi → sambungkan ke jaringan RC Spark (nama &
+   password biasanya tertera di stiker RC). Kembali ke app — status
+   **Drone tersambung** akan menyala hijau.
+7. **Di laptop:** sambungkan WiFi Windows ke jaringan RC Spark yang sama.
+8. **Cek IP baru laptop** di jaringan itu (WSL2 ikut IP Windows berkat
+   *mirrored networking* — lihat bagian Jaringan di bawah):
+   ```bash
+   hostname -I
+   ```
+9. **Di app:** ganti isian **IP** dengan IP baru dari langkah 8, port tetap
+   `9090` → **Sambungkan Jembatan**. Log app harus menunjukkan
+   "Virtual Stick aktif" lalu "Jembatan AKTIF".
+10. **Dashboard** (`http://localhost:3000` dibuka langsung di laptop — tidak
+    perlu IP jaringan RC untuk ini) akan menampilkan telemetry.
+11. **Setelah misi selesai** — tekan **Sync Foto ke Backend** di app. Foto
+    diunduh dari kartu SD drone ke iPhone, lalu diunggah sebagai satu batch;
+    app menampilkan `job_id` yang bisa dipantau di `GET /jobs/{id}`.
 
 > Sinkronisasi foto memindahkan kamera ke mode unduh, sehingga drone **tidak bisa
 > memotret** selama proses berlangsung. Jalankan setelah pemotretan selesai, bukan
@@ -111,22 +145,25 @@ open DroneStackBridge.xcworkspace
 
 ### Jaringan — jebakan paling sering
 
-- **iPhone dan laptop harus berada di jaringan yang sama.** Kalau iPhone
-  tersambung ke Wi-Fi Spark, Wi-Fi-nya terpakai untuk drone dan tidak bisa
-  menjangkau laptop. **Sambungkan iPhone ke remote lewat kabel USB** supaya
-  Wi-Fi iPhone bebas dipakai untuk LAN laptop.
-- **Laptop memakai WSL2** — IP WSL2 berbeda dari IP LAN Windows dan berubah tiap
-  restart. Kalau app tidak bisa connect padahal IP terlihat benar, itu penyebab
-  paling mungkin. Perbaikannya: aktifkan *mirrored networking* di
-  `C:\Users\<user>\.wslconfig`:
+- **iPhone dan laptop harus berada di jaringan WiFi yang SAMA** — dalam
+  praktiknya berarti WiFi yang dipancarkan RC Spark (lihat topologi di atas).
+- **Laptop memakai WSL2** — tanpa perbaikan, IP WSL2 beda dari IP Windows dan
+  berubah tiap ganti jaringan/restart. Sudah diperbaiki dengan *mirrored
+  networking* di `C:\Users\<user>\.wslconfig`:
   ```ini
   [wsl2]
   networkingMode=mirrored
   ```
-  lalu `wsl --shutdown`. Cek cepat di WSL: `hostname -I` dan
-  `ss -tlnp | grep 9090`.
-- iOS akan menampilkan prompt izin **Local Network** saat pertama menyambung.
-  Harus diizinkan; kalau tertolak, WebSocket gagal tanpa pesan yang jelas.
+  lalu `wsl --shutdown`. Dengan mode ini, IP WSL2 otomatis ikut IP Windows di
+  jaringan APA PUN yang aktif — termasuk saat Windows pindah ke WiFi RC Spark,
+  tidak perlu konfigurasi ulang portproxy tiap ganti jaringan. Cek cepat di
+  WSL: `hostname -I` (IP terkini) dan `ss -tlnp | grep 9090` (pastikan
+  rosbridge listen).
+- iOS akan menampilkan prompt izin **Local Network** saat pertama menyambung
+  ke jaringan baru. Harus diizinkan; kalau tertolak, WebSocket gagal tanpa
+  pesan yang jelas.
+- Kalau laptop gagal join WiFi RC (password salah/band tidak cocok), cek
+  stiker fisik di badan RC untuk SSID & password default.
 
 ---
 
