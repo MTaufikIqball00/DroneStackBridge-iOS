@@ -488,16 +488,26 @@ extension DJIFlightLink: DJIRemoteControllerDelegate {
     /// status perangkat keras (stik, sakelar, semua tombol), jadi yang dilakukan
     /// di sini harus murah. Hanya transisi tidak-ditekan -> ditekan yang
     /// diteruskan; lihat `wasShutterClicked`.
+    /// Nama Swift-nya `remoteController(_:didUpdate:)`, BUKAN
+    /// `remoteController(_:didUpdateHardwareState:)` seperti di header ObjC —
+    /// importer memendekkan labelnya karena tipe parameter sudah menyebut
+    /// "HardwareState". Pola yang sama seperti `fetchData(withOffset:update:...)`
+    /// di MediaSyncManager.
     func remoteController(
         _ rc: DJIRemoteController,
-        didUpdateHardwareState state: DJIRCHardwareState
+        didUpdate state: DJIRCHardwareState
     ) {
         let shutter = state.shutterButton
+        // Anggota struct C bertipe BOOL diimpor Swift sebagai `ObjCBool`, bukan
+        // `Bool` — jadi harus lewat `.boolValue` sebelum bisa dipakai sebagai
+        // kondisi. (Berbeda dari properti kelas ObjC seperti `state.areMotorsOn`
+        // yang otomatis jadi `Bool` biasa.)
+        //
         // `isPresent` false berarti model RC ini memang tidak punya tombol
         // tersebut — bukan berarti sedang tidak ditekan.
-        guard shutter.isPresent else { return }
+        guard shutter.isPresent.boolValue else { return }
 
-        let clicked = shutter.isClicked
+        let clicked = shutter.isClicked.boolValue
         defer { wasShutterClicked = clicked }
         guard clicked, !wasShutterClicked else { return }
 
