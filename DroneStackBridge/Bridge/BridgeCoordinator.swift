@@ -105,6 +105,25 @@ final class BridgeCoordinator: ObservableObject {
         statusLine = "Jembatan dihentikan."
     }
 
+    /// Ambil satu foto — padanan tombol shutter fisik di RC.
+    ///
+    /// Disediakan di layar karena tombol RC hanya berfungsi bila app yang
+    /// mendengarkan (lihat DJIFlightLink.capturePhoto). Tombol ini juga jadi
+    /// cara memastikan jalur pemotretan benar-benar hidup tanpa perlu menebak
+    /// apakah masalahnya di tombol fisik atau di kamera.
+    func capturePhoto() {
+        guard productConnected else {
+            statusLine = "Drone belum tersambung — kamera tidak bisa dipakai."
+            append(log: statusLine)
+            return
+        }
+        flightLink.capturePhoto { [weak self] _, message in
+            Task { @MainActor in
+                self?.statusLine = message
+            }
+        }
+    }
+
     // MARK: - Jalur foto
 
     /// Unduh foto baru dari kartu SD drone ke iPhone, lalu unggah ke backend.

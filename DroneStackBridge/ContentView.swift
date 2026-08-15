@@ -103,6 +103,17 @@ struct ContentView: View {
     private var photoSection: some View {
         Section {
             Button {
+                coordinator.capturePhoto()
+            } label: {
+                HStack {
+                    Image(systemName: "camera.fill")
+                    Text("Ambil Foto")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .disabled(!coordinator.productConnected || coordinator.photoSyncing)
+
+            Button {
                 coordinator.syncPhotos()
             } label: {
                 HStack {
@@ -148,7 +159,8 @@ struct ContentView: View {
         } header: {
             Text("Foto (backend :\(String(BridgeSettings.defaultBackendPort)))")
         } footer: {
-            Text("Pengunduhan memindahkan kamera ke mode unduh, jadi drone tidak "
+            Text("Tombol shutter fisik di RC juga berfungsi selama app ini terbuka. "
+                 + "Pengunduhan memindahkan kamera ke mode unduh, jadi drone tidak "
                  + "bisa memotret selama proses ini — jalankan SETELAH misi selesai. "
                  + "Backend menolak job di bawah 4 foto.")
                 .font(.caption)

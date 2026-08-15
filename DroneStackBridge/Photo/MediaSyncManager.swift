@@ -57,7 +57,19 @@ final class MediaSyncManager {
     /// supaya penulisan berkas belasan MB tidak membekukan UI.
     private let downloadQueue = DispatchQueue(label: "com.dronestack.mediasync")
 
-    private(set) var isSyncing = false
+    /// Sedang menyinkronkan foto — artinya kamera berada di mode unduh dan
+    /// TIDAK bisa memotret.
+    ///
+    /// Sengaja `static`: kondisinya memang milik PERANGKAT, bukan milik satu
+    /// instance kelas ini. Kamera drone cuma satu dan hanya bisa berada di satu
+    /// mode pada satu waktu, jadi `DJIFlightLink.capturePhoto()` perlu
+    /// membacanya tanpa harus dioper referensi objek ini — dua bagian app yang
+    /// tidak saling kenal tapi memperebutkan sumber daya fisik yang sama.
+    private(set) static var isSyncInProgress = false
+
+    /// Cerminan per-instance dari status global di atas — satu sumber
+    /// kebenaran, supaya keduanya tidak mungkin berbeda.
+    var isSyncing: Bool { Self.isSyncInProgress }
 
     // MARK: - Lokasi berkas
 
@@ -117,7 +129,7 @@ final class MediaSyncManager {
             return
         }
 
-        isSyncing = true
+        Self.isSyncInProgress = true
         progress("Memindahkan kamera ke mode unduh...")
 
         // Dua jalur berbeda tergantung produk: Spark memakai setMode klasik,
@@ -286,7 +298,7 @@ final class MediaSyncManager {
         error: PhotoPipelineError? = nil
     ) {
         restoreShootMode(camera: camera)
-        isSyncing = false
+        Self.isSyncInProgress = false
         if let error = error {
             completion(.failure(error))
         } else {

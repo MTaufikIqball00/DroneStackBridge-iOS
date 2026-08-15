@@ -100,6 +100,17 @@ final class DJIFlightLink: NSObject {
     private var originLat: Double?
     private var originLon: Double?
 
+    /// Status tombol shutter RC pada callback SEBELUMNYA — dipakai untuk
+    /// deteksi TEPI (rising edge).
+    ///
+    /// Callback `didUpdateHardwareState` berdenyut terus (~10Hz) selama RC
+    /// tersambung, dan `isClicked` bernilai true SELAMA tombol ditahan — bukan
+    /// sekali per tekan. Tanpa membandingkan dengan status sebelumnya, satu
+    /// tekanan singkat akan memicu belasan `startShootPhoto()` beruntun.
+    ///
+    /// Diakses dari delegate RC yang tiba di thread utama, jadi tidak dikunci.
+    private var wasShutterClicked = false
+
     // MARK: - Registrasi SDK
 
     func registerWithSDK() {
@@ -256,6 +267,50 @@ final class DJIFlightLink: NSObject {
         }
     }
 
+    /// Ambil satu foto.
+    ///
+    /// Dipanggil dari tombol shutter fisik RC (lihat DJIRemoteControllerDelegate
+    /// di bawah) maupun tombol "Ambil Foto" di layar app.
+    ///
+    /// KENAPA APP HARUS IKUT CAMPUR SAMA SEKALI: selama app kustom ini yang
+    /// memegang sesi SDK (menggantikan DJI GO 4), tombol RC hanya mengirimkan
+    /// PERUBAHAN STATUS ke app — bukan langsung memerintah kamera. Kalau tidak
+    /// ada yang mendengarkan dan menerjemahkannya jadi `startShootPhoto()`,
+    /// menekan shutter tidak berefek apa pun.
+    func capturePhoto(completion: ((Bool, String) -> Void)? = nil) {
+        guard let camera = currentCamera() else {
+            let message = "Kamera drone tidak tersedia."
+            log(message)
+            completion?(false, message)
+            return
+        }
+        // Selama sinkronisasi berjalan kamera dipindah ke mode unduh dan TIDAK
+        // bisa memotret. Dicegat di sini supaya pesannya menjelaskan sebabnya,
+        // bukan sekadar galat mentah dari SDK.
+        guard !MediaSyncManager.isSyncInProgress else {
+            let message = "Sedang sinkronisasi foto — kamera di mode unduh, pemotretan dilewati."
+            log(message)
+            completion?(false, message)
+            return
+        }
+
+        camera.startShootPhoto { [weak self] error in
+            if let error = error {
+                // Sebab paling umum: kamera belum berada di mode ShootPhoto
+                // (prasyarat yang disebut dokumentasi `startShootPhoto`), mis.
+                // masih tertinggal di mode unduh dari sinkronisasi sebelumnya
+                // yang gagal di tengah.
+                let message = "Gagal memotret: \(error.localizedDescription)"
+                self?.log(message)
+                completion?(false, message)
+            } else {
+                let message = "Foto diambil."
+                self?.log(message)
+                completion?(true, message)
+            }
+        }
+    }
+
     func startGoHome(completion: @escaping (Bool, String) -> Void) {
         guard let fc = flightController else {
             completion(false, "FlightController tidak tersedia.")
@@ -287,14 +342,22 @@ final class DJIFlightLink: NSObject {
         }
     }
 
+    private func currentCamera() -> DJICamera? {
+        (DJISDKManager.product() as? DJIAircraft)?.camera
+    }
+
     private func attachComponentDelegates() {
         guard let aircraft = DJISDKManager.product() as? DJIAircraft else { return }
         aircraft.flightController?.delegate = self
         aircraft.battery?.delegate = self
+        aircraft.remoteController?.delegate = self
     }
 
     private func detachComponentDelegates() {
         guard let aircraft = DJISDKManager.product() as? DJIAircraft else { return }
+        if aircraft.remoteController?.delegate === self {
+            aircraft.remoteController?.delegate = nil
+        }
         if aircraft.flightController?.delegate === self {
             aircraft.flightController?.delegate = nil
         }
@@ -412,6 +475,33 @@ extension DJIFlightLink: DJIFlightControllerDelegate {
             NSLog("[DJIFlightLink] Origin lokal ditetapkan: %f, %f", lat, lon)
         }
         lock.unlock()
+    }
+}
+
+// MARK: - DJIRemoteControllerDelegate
+
+extension DJIFlightLink: DJIRemoteControllerDelegate {
+
+    /// Tombol shutter fisik di RC.
+    ///
+    /// Callback ini berdenyut terus selama RC tersambung dan membawa SELURUH
+    /// status perangkat keras (stik, sakelar, semua tombol), jadi yang dilakukan
+    /// di sini harus murah. Hanya transisi tidak-ditekan -> ditekan yang
+    /// diteruskan; lihat `wasShutterClicked`.
+    func remoteController(
+        _ rc: DJIRemoteController,
+        didUpdateHardwareState state: DJIRCHardwareState
+    ) {
+        let shutter = state.shutterButton
+        // `isPresent` false berarti model RC ini memang tidak punya tombol
+        // tersebut — bukan berarti sedang tidak ditekan.
+        guard shutter.isPresent else { return }
+
+        let clicked = shutter.isClicked
+        defer { wasShutterClicked = clicked }
+        guard clicked, !wasShutterClicked else { return }
+
+        capturePhoto()
     }
 }
 
