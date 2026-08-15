@@ -243,12 +243,13 @@ final class MediaSyncManager {
         var settled = false
 
         // Di ObjC selektornya `-fetchFileDataWithOffset:updateQueue:updateBlock:`
-        // (terverifikasi di docs/API Reference SDK). Importer Swift MEMBUANG kata
-        // "File" karena mengulang nama kelas pemiliknya (DJIMediaFile), sehingga
-        // menjadi `fetchData(withOffset:updateQueue:updateBlock:)` — bukan
-        // `fetchFileData(...)` seperti dugaan awal, yang ditolak compiler dengan
-        // "value of type 'DJIMediaFile' has no member 'fetchFileData'".
-        file.fetchData(withOffset: 0, updateQueue: downloadQueue) { data, isComplete, error in
+        // (terverifikasi dari header framework). Importer Swift mengubahnya DUA
+        // kali: kata "File" dibuang dari nama dasar karena mengulang nama kelas
+        // pemiliknya (DJIMediaFile), dan label `updateQueue:` dipendekkan jadi
+        // `update:` karena tipe parameternya sudah menyebut antrean.
+        // Hasil akhirnya `fetchData(withOffset:update:updateBlock:)` — tidak bisa
+        // ditebak dari dokumentasi, yang hanya memuat nama ObjC.
+        file.fetchData(withOffset: 0, update: downloadQueue) { data, isComplete, error in
             guard !settled else { return }
 
             if let error = error {
