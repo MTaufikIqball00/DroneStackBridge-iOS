@@ -1,0 +1,15 @@
+# CocoaPods — diinstal ulang tiap build (lihat Podfile.lock yang TETAP ikut commit)
+Pods/
+
+# Dihasilkan XcodeGen dari project.yml — jangan commit, akan basi
+*.xcodeproj/
+*.xcworkspace/
+!default.xcworkspace
+
+# Build & arsip lokal
+build/
+DerivedData/
+*.xcarchive
+
+# macOS
+.DS_Store

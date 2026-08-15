@@ -1,0 +1,85 @@
+# build-ios.yml — build .ipa TANPA tanda tangan di runner macOS GitHub.
+#
+# KENAPA TANPA TANDA TANGAN (unsigned):
+# Menandatangani butuh sertifikat Apple Developer yang terikat akun — kalau
+# disimpan sebagai GitHub Secret, itu berarti kredensial Apple ID ada di cloud
+# pihak ketiga. Untuk alur "GitHub Actions build + Sideloadly install", kita
+# sengaja BIARKAN unsigned di sini; Sideloadly yang menandatangani NANTI, di
+# laptop sendiri, pakai Apple ID gratis. Lebih aman dan lebih sederhana.
+#
+# CARA MEMICU: buka tab Actions di GitHub, pilih workflow ini, klik
+# "Run workflow" (workflow_dispatch) — atau otomatis tiap push ke main.
+
+name: Build iOS (unsigned)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "DroneStackBridge/**"
+      - "Podfile"
+      - "project.yml"
+      - ".github/workflows/build-ios.yml"
+
+jobs:
+  build:
+    # Pin versi, JANGAN "macos-latest" — Apple mengganti Xcode default di
+    # runner tanpa pemberitahuan, dan itu bisa mematahkan build tanpa ada
+    # satu baris pun kode yang berubah di sisi kita.
+    runs-on: macos-14
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pilih versi Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
+      - name: Pasang XcodeGen
+        run: brew install xcodegen
+
+      - name: Hasilkan project Xcode dari project.yml
+        run: xcodegen generate
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: Pods
+          # Kunci cache dari isi Podfile — cache basi otomatis dibuang begitu
+          # daftar pod berubah, tanpa perlu dibersihkan manual.
+          key: pods-${{ hashFiles('Podfile') }}
+
+      - name: Pasang pod (DJI-SDK-iOS)
+        run: pod install --repo-update
+
+      - name: Build & archive (tanpa tanda tangan)
+        run: |
+          xcodebuild archive \
+            -workspace DroneStackBridge.xcworkspace \
+            -scheme DroneStackBridge \
+            -configuration Release \
+            -archivePath build/DroneStackBridge.xcarchive \
+            -destination "generic/platform=iOS" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
+
+      - name: Bungkus jadi .ipa
+        run: |
+          set -e
+          APP_PATH="build/DroneStackBridge.xcarchive/Products/Applications"
+          test -d "$APP_PATH"/*.app
+          mkdir -p build/Payload
+          cp -r "$APP_PATH"/*.app build/Payload/
+          cd build && zip -qr DroneStackBridge-unsigned.ipa Payload
+
+      - name: Unggah .ipa sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DroneStackBridge-unsigned
+          path: build/DroneStackBridge-unsigned.ipa
+          # .ipa tanpa tanda tangan hanya berguna sesaat (dipakai lalu
+          # ditandatangani ulang Sideloadly setiap minggu) — tidak perlu
+          # disimpan berbulan-bulan di GitHub.
+          retention-days: 14

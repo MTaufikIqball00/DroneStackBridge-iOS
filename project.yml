@@ -1,0 +1,60 @@
+# project.yml — spesifikasi XcodeGen.
+#
+# Ini JALUR CEPAT (opsional). Di Mac:
+#     brew install xcodegen
+#     cd DroneStackBridge-iOS
+#     xcodegen generate
+#     pod install
+#     open DroneStackBridge.xcworkspace
+#
+# File .xcodeproj sengaja TIDAK ikut disertakan di repo ini. Isinya (pbxproj)
+# adalah format biner-semu yang penuh UUID dan tidak bisa dibuat dengan benar
+# tanpa Xcode — file .xcodeproj yang dikarang tangan justru sering gagal dibuka
+# dengan pesan yang tidak menolong sama sekali. Kalau tidak mau memasang
+# XcodeGen, buat project baru lewat Xcode secara manual; langkahnya ada di
+# README.md.
+
+name: DroneStackBridge
+
+options:
+  bundleIdPrefix: com.dronestack
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+# Scheme WAJIB dideklarasikan eksplisit di sini.
+#
+# Tanpa blok ini, XcodeGen tidak membuat scheme apa pun; Xcode memang membuatnya
+# otomatis saat project dibuka, TAPI scheme itu tersimpan di xcuserdata dan tidak
+# ikut ter-commit. Akibatnya `xcodebuild -scheme DroneStackBridge` di GitHub
+# Actions gagal dengan "scheme not found" — padahal di Mac lokal berhasil, karena
+# di sana schemenya sudah dibuat Xcode.
+schemes:
+  DroneStackBridge:
+    build:
+      targets:
+        DroneStackBridge: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+
+targets:
+  DroneStackBridge:
+    type: application
+    platform: iOS
+    sources:
+      - path: DroneStackBridge
+    info:
+      path: DroneStackBridge/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.dronestack.bridge
+        INFOPLIST_FILE: DroneStackBridge/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        # Lihat catatan yang sama di Podfile.
+        EXCLUDED_ARCHS[sdk=iphonesimulator*]: arm64

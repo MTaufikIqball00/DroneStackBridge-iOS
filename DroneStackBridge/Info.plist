@@ -1,0 +1,107 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+
+	<!--
+	  App Key DJI Developer.
+
+	  WAJIB diganti. Key yang sudah didaftarkan untuk app ANDROID TIDAK BISA
+	  dipakai di sini: DJI mengikat setiap key ke satu Bundle ID / package name.
+	  Daftarkan aplikasi baru di developer.dji.com dengan Bundle ID yang sama
+	  persis dengan PRODUCT_BUNDLE_IDENTIFIER target ini
+	  (default: com.dronestack.bridge), lalu tempel key-nya di bawah.
+
+	  Bila key salah atau kosong, registrasi SDK gagal saat runtime dan seluruh
+	  fungsi DJI mati — bukan gagal saat build, jadi gejalanya hanya terlihat
+	  di layar status app.
+	-->
+	<key>DJISDKAppKey</key>
+	<string>f085c6061a615a7dff5fe65c</string>
+
+	<!--
+	  Izin jaringan lokal (iOS 14+).
+
+	  Menyambung ke IP LAN laptop (mis. 192.168.1.10:9090) memicu prompt
+	  "Local Network" milik iOS. Tanpa kunci ini, permintaan izinnya ditolak
+	  diam-diam dan WebSocket gagal tanpa pesan yang masuk akal — persis
+	  gejala "IP sudah benar tapi tetap tidak connect".
+	-->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Menyambung ke rosbridge_server dashboard drone-stack di jaringan lokal.</string>
+
+	<!--
+	  App Transport Security.
+
+	  rosbridge_server melayani WebSocket TANPA TLS (ws://, bukan wss://), dan
+	  ATS memblokir koneksi tak terenkripsi secara default. Untuk app riset yang
+	  hanya dipakai di LAN sendiri dan tidak didistribusikan lewat App Store,
+	  membuka arbitrary loads adalah kompromi yang wajar. Kalau suatu saat
+	  rosbridge dijalankan di belakang TLS, hapus seluruh blok ini.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+
+	<!-- DJI SDK memakai Bluetooth untuk sebagian jalur koneksi produk. -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Digunakan DJI SDK untuk menyambung ke drone.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Digunakan DJI SDK untuk menyambung ke drone.</string>
+
+	<!--
+	  Protokol External Accessory untuk koneksi remote DJI lewat kabel USB.
+	  Daftar ini disalin dari sample resmi DJI; tanpa itu iOS tidak mengenali
+	  remote sebagai aksesori yang boleh diajak bicara oleh app ini.
+	-->
+	<key>UISupportedExternalAccessoryProtocols</key>
+	<array>
+		<string>com.dji.video</string>
+		<string>com.dji.protocol</string>
+		<string>com.dji.common</string>
+		<string>com.dji.logiclink</string>
+	</array>
+
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+</dict>
+</plist>
