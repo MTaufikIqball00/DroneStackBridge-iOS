@@ -51,6 +51,22 @@ struct FlightSnapshot {
     var satelliteCount: Int = 0
     /// Ada data state yang pernah masuk sama sekali.
     var hasReceivedState: Bool = false
+    /// Kapan state terakhir diterima. nil = belum pernah sama sekali.
+    var stateReceivedAt: Date?
+
+    /// Apakah data ini cukup baru untuk dijadikan dasar keputusan KONTROL.
+    ///
+    /// "Pernah menerima data" saja tidak cukup, dan nilai default struct ini
+    /// justru berbahaya: `altitude = 0` tidak bisa dibedakan dari pembacaan
+    /// sungguhan "drone di tanah". Loop kontrol yang membacanya sebelum
+    /// telemetry mengalir akan menyimpulkan drone masih di bawah target lalu
+    /// memerintahkan naik — terus-menerus, karena angkanya tidak pernah
+    /// berubah. Nilai basi punya akibat yang sama untuk alasan berbeda:
+    /// keputusan diambil dari keadaan yang sudah lewat.
+    func isFresh(maxAge: TimeInterval) -> Bool {
+        guard hasReceivedState, let at = stateReceivedAt else { return false }
+        return Date().timeIntervalSince(at) <= maxAge
+    }
 
     /// Fix GPS cukup baik untuk dipercaya sebagai koordinat bumi sungguhan.
     ///
@@ -456,6 +472,7 @@ extension DJIFlightLink: DJIFlightControllerDelegate {
         updated.flightModeString = state.flightModeString ?? "UNKNOWN"
         updated.satelliteCount = Int(state.satelliteCount)
         updated.hasReceivedState = true
+        updated.stateReceivedAt = Date()
 
         lock.lock()
         // Baterai datang dari delegate LAIN dengan irama sendiri — nilainya

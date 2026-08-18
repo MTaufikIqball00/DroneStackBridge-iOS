@@ -57,6 +57,21 @@ final class MediaSyncManager {
     /// supaya penulisan berkas belasan MB tidak membekukan UI.
     private let downloadQueue = DispatchQueue(label: "com.dronestack.mediasync")
 
+    /// Berapa kali satu berkas dicoba sebelum dilewati.
+    private let maxDownloadAttempts = 3
+
+    /// Jeda sebelum mencoba ulang berkas yang gagal. Memberi waktu kamera
+    /// menyelesaikan penulisan ke kartu SD dan sinyal radio pulih.
+    private let retryDelaySeconds: TimeInterval = 2.0
+
+    /// Jeda setelah kamera masuk mode unduh, sebelum daftar berkas dibaca.
+    ///
+    /// Foto yang BARU dipotret bisa belum selesai ditulis ke kartu SD saat
+    /// perpindahan mode selesai. Membaca daftar terlalu cepat membuat berkas
+    /// terakhir tidak terdaftar, atau terdaftar tetapi gagal diunduh karena
+    /// masih ditulis — gejalanya "beberapa foto terakhir hilang".
+    private let listSettleSeconds: TimeInterval = 2.0
+
     /// Sedang menyinkronkan foto — artinya kamera berada di mode unduh dan
     /// TIDAK bisa memotret.
     ///
@@ -159,40 +174,46 @@ final class MediaSyncManager {
         progress: @escaping (String) -> Void,
         completion: @escaping (Result<SyncResult, PhotoPipelineError>) -> Void
     ) {
-        progress("Membaca daftar foto di kartu SD drone...")
+        progress("Menunggu kamera selesai menulis ke kartu SD...")
 
-        mediaManager.refreshFileList(of: .sdCard) { [weak self] error in
+        // Jeda sebelum membaca daftar — lihat listSettleSeconds.
+        downloadQueue.asyncAfter(deadline: .now() + listSettleSeconds) { [weak self] in
             guard let self = self else { return }
-            if let error = error {
-                self.finish(camera: camera, completion: completion, error: .message(
-                    "Gagal membaca kartu SD: \(error.localizedDescription)"))
-                return
+            progress("Membaca daftar foto di kartu SD drone...")
+
+            mediaManager.refreshFileList(of: .sdCard) { [weak self] error in
+                guard let self = self else { return }
+                if let error = error {
+                    self.finish(camera: camera, completion: completion, error: .message(
+                        "Gagal membaca kartu SD: \(error.localizedDescription)"))
+                    return
+                }
+
+                let files = mediaManager.sdCardFileListSnapshot() ?? []
+                let destDir = self.photoDirectory()
+
+                // Buang video/RAW/panorama, dan lewati yang sudah ada di iPhone.
+                // `fileName` bertipe String non-optional di SDK iOS (berbeda dari
+                // sisi Android yang bisa mengembalikan null), jadi tidak di-bind
+                // dengan `guard let`.
+                let pending = files.filter { file in
+                    let name = file.fileName
+                    guard self.isJPEG(fileName: name) else { return false }
+                    return !self.alreadyDownloaded(name: name, in: destDir)
+                }
+
+                guard !pending.isEmpty else {
+                    progress("Tidak ada foto baru.")
+                    self.finish(camera: camera, completion: completion, newPhotos: [])
+                    return
+                }
+
+                progress("Mengunduh \(pending.count) foto baru...")
+                self.downloadSequentially(
+                    queue: pending, index: 0, total: pending.count,
+                    destDir: destDir, downloaded: [],
+                    camera: camera, progress: progress, completion: completion)
             }
-
-            let files = mediaManager.sdCardFileListSnapshot() ?? []
-            let destDir = self.photoDirectory()
-
-            // Buang video/RAW/panorama, dan lewati yang sudah ada di iPhone.
-            // `fileName` bertipe String non-optional di SDK iOS (berbeda dari
-            // sisi Android yang bisa mengembalikan null), jadi tidak di-bind
-            // dengan `guard let`.
-            let pending = files.filter { file in
-                let name = file.fileName
-                guard self.isJPEG(fileName: name) else { return false }
-                return !self.alreadyDownloaded(name: name, in: destDir)
-            }
-
-            guard !pending.isEmpty else {
-                progress("Tidak ada foto baru.")
-                self.finish(camera: camera, completion: completion, newPhotos: [])
-                return
-            }
-
-            progress("Mengunduh \(pending.count) foto baru...")
-            self.downloadSequentially(
-                queue: pending, index: 0, total: pending.count,
-                destDir: destDir, downloaded: [],
-                camera: camera, progress: progress, completion: completion)
         }
     }
 
@@ -208,6 +229,7 @@ final class MediaSyncManager {
         destDir: URL,
         downloaded: [URL],
         camera: DJICamera,
+        attempt: Int = 1,
         progress: @escaping (String) -> Void,
         completion: @escaping (Result<SyncResult, PhotoPipelineError>) -> Void
     ) {
@@ -218,22 +240,50 @@ final class MediaSyncManager {
 
         let file = pending[index]
         let name = file.fileName
-        progress("Mengunduh \(index + 1)/\(total): \(name)")
+        let suffix = attempt > 1 ? " (percobaan \(attempt))" : ""
+        progress("Mengunduh \(index + 1)/\(total): \(name)\(suffix)")
 
         download(file: file, named: name, to: destDir) { [weak self] savedURL in
             guard let self = self else { return }
-            var next = downloaded
+
             if let savedURL = savedURL {
+                var next = downloaded
                 next.append(savedURL)
-            } else {
-                // Satu berkas gagal tidak membatalkan sisanya — lebih baik
-                // membawa pulang sebagian foto daripada tidak sama sekali.
-                progress("Lewati \(name) (gagal).")
+                self.downloadSequentially(
+                    queue: pending, index: index + 1, total: total,
+                    destDir: destDir, downloaded: next,
+                    camera: camera, attempt: 1,
+                    progress: progress, completion: completion)
+                return
             }
+
+            // COBA LAGI sebelum menyerah. Transfer lewat radio DJI kerap gagal
+            // sesaat karena gangguan sinyal, dan berkas yang baru saja dipotret
+            // kadang belum selesai ditulis kamera ke kartu SD saat daftar
+            // diambil. Keduanya pulih sendiri pada percobaan berikutnya —
+            // menyerah di percobaan pertama membuang foto yang sebenarnya
+            // masih bisa diambil.
+            if attempt < self.maxDownloadAttempts {
+                progress("Gagal \(name), mencoba lagi...")
+                self.downloadQueue.asyncAfter(deadline: .now() + self.retryDelaySeconds) {
+                    self.downloadSequentially(
+                        queue: pending, index: index, total: total,
+                        destDir: destDir, downloaded: downloaded,
+                        camera: camera, attempt: attempt + 1,
+                        progress: progress, completion: completion)
+                }
+                return
+            }
+
+            // Sudah kehabisan percobaan. Satu berkas gagal tidak membatalkan
+            // sisanya — lebih baik membawa pulang sebagian foto daripada tidak
+            // sama sekali.
+            progress("Lewati \(name) (gagal setelah \(self.maxDownloadAttempts) percobaan).")
             self.downloadSequentially(
                 queue: pending, index: index + 1, total: total,
-                destDir: destDir, downloaded: next,
-                camera: camera, progress: progress, completion: completion)
+                destDir: destDir, downloaded: downloaded,
+                camera: camera, attempt: 1,
+                progress: progress, completion: completion)
         }
     }
 

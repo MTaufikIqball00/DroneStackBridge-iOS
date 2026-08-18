@@ -84,6 +84,25 @@
 		<string>com.dji.logiclink</string>
 	</array>
 
+	<!--
+	  Akses berkas foto hasil sinkronisasi.
+
+	  MediaSyncManager menyimpan foto ke Documents milik app. Di iOS folder itu
+	  privat: tidak muncul di app Photos MAUPUN app Files, sehingga operator
+	  mengira unduhan gagal padahal berkasnya ada. Dua kunci di bawah membuka
+	  folder itu di app Files (Browse -> On My iPhone -> DroneStackBridge),
+	  sehingga foto bisa diperiksa, dibagikan, atau disalin manual.
+
+	  SENGAJA memakai jalur Files, bukan menyimpan ke Photos library: menulis ke
+	  Photos butuh izin NSPhotoLibraryAddUsageDescription + kode PHPhotoLibrary,
+	  dan menyalin foto ke galeri pribadi operator bukan tujuan app ini — yang
+	  dibutuhkan hanya cara melihat & memverifikasi hasil unduhan.
+	-->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
+
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>arm64</string>

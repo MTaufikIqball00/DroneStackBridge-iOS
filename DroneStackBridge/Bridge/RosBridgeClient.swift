@@ -63,6 +63,19 @@ final class RosBridgeClient {
     private let minTakeoffAltitudeM = 1.0
     private let maxTakeoffAltitudeM = 50.0
 
+    /// Umur maksimum telemetry yang masih boleh dipakai mengambil keputusan
+    /// KONTROL (auto-climb & navigasi waypoint).
+    ///
+    /// Dipilih 1 detik: loop kontrol berjalan 10x per detik, jadi ambang ini
+    /// menoleransi ~10 pembaruan yang hilang berturut-turut sebelum menyerah —
+    /// cukup longgar untuk riak WiFi biasa, tapi jauh lebih pendek daripada
+    /// waktu yang dibutuhkan drone untuk melenceng jauh pada 2 m/s.
+    private let telemetryFreshnessTimeout: TimeInterval = 1.0
+
+    /// Berapa lama auto-climb boleh menunggu telemetry pulih sebelum menyerah
+    /// dan mengembalikan kendali ke operator.
+    private let climbStaleAbortSeconds: TimeInterval = 3.0
+
     /// BEDA DARI ANDROID: batas kedaluwarsa perintah manual.
     ///
     /// Versi Android menyimpan nilai /cmd_vel terakhir tanpa batas waktu. Selama
@@ -105,6 +118,8 @@ final class RosBridgeClient {
     // Auto-climb setelah takeoff.
     private var targetAltitudeM = 1.0
     private var climbInProgress = false
+    /// Sejak kapan auto-climb berjalan tanpa telemetry segar; nil bila normal.
+    private var staleClimbStartedAt: Date?
 
     // Waypoint aktif.
     private var targetLat: Double?
@@ -137,6 +152,7 @@ final class RosBridgeClient {
             self.isRunning = false
             self.isControllingFlight = false
             self.climbInProgress = false
+            self.staleClimbStartedAt = nil
             self.targetLat = nil
             self.targetLon = nil
             self.stopTimers()
@@ -240,8 +256,19 @@ final class RosBridgeClient {
         cmdYawRate = doubleValue(angular["z"])
         lastCmdVelAt = Date()
 
-        // Perintah manual membatalkan navigasi waypoint yang sedang berjalan —
-        // operator selalu menang atas mode otomatis.
+        // Perintah manual membatalkan SELURUH mode otomatis — operator selalu
+        // menang.
+        //
+        // Auto-climb WAJIB ikut dibatalkan di sini, bukan hanya waypoint.
+        // Urutan prioritas di controlTick() adalah
+        // auto-climb > waypoint > manual, jadi selama climbInProgress menyala
+        // cabang pertama selalu menang dan perintah stick TIDAK PERNAH sampai
+        // ke drone: operator menekan WASD dan drone diam saja, tanpa satu pun
+        // pesan yang menjelaskan kenapa. Membatalkannya di sini membuat aturan
+        // "operator selalu menang" berlaku sungguhan, bukan hanya untuk
+        // waypoint.
+        climbInProgress = false
+        staleClimbStartedAt = nil
         targetLat = nil
         targetLon = nil
     }
@@ -351,6 +378,7 @@ final class RosBridgeClient {
                 // pada Spark) dan tidak menerima parameter altitude sama
                 // sekali; sisa pendakian ke nilai yang diminta dashboard
                 // dikerjakan loop kontrol lewat virtual stick.
+                self.staleClimbStartedAt = nil
                 self.climbInProgress = true
             }
         }
@@ -358,6 +386,7 @@ final class RosBridgeClient {
 
     private func doLand(callId: String, service: String) {
         climbInProgress = false
+        staleClimbStartedAt = nil
         targetLat = nil
         targetLon = nil
         flightLink.startLanding { [weak self] success, message in
@@ -544,17 +573,54 @@ final class RosBridgeClient {
 
         if climbInProgress {
             isControllingFlight = true
-            let diff = targetAltitudeM - snapshot.altitude
-            if abs(diff) <= climbToleranceM {
-                climbInProgress = false
+            // PENJAGA KESELAMATAN — jangan pernah memanjat memakai ketinggian
+            // yang tidak tepercaya.
+            //
+            // FlightSnapshot() kosong berisi altitude = 0, dan angka itu tidak
+            // bisa dibedakan dari "drone masih di tanah". Tanpa penjaga ini,
+            // selama telemetry belum mengalir (paling nyata pada takeoff
+            // PERTAMA setelah tersambung, saat delegate flight controller baru
+            // dipasang) loop menyimpulkan drone belum sampai target lalu terus
+            // memerintahkan naik 2 m/s — drone melewati target jauh sekali
+            // sebelum pembacaan pertama tiba dan menghentikannya.
+            if !snapshot.isFresh(maxAge: telemetryFreshnessTimeout) {
+                // Menahan ketinggian adalah satu-satunya perintah yang aman
+                // saat posisi tidak diketahui: berhenti naik, jangan pula
+                // turun paksa (drone bisa saja sedang dekat tanah).
+                vertical = 0
+                if staleClimbStartedAt == nil { staleClimbStartedAt = Date() }
+                if let since = staleClimbStartedAt,
+                   Date().timeIntervalSince(since) >= climbStaleAbortSeconds {
+                    // Telemetry tidak kunjung pulih. Membiarkan climbInProgress
+                    // menyala berarti drone menggantung dalam mode terkendali
+                    // tanpa umpan balik; lebih baik menyerahkan kendali dan
+                    // memberi tahu operator secara eksplisit.
+                    climbInProgress = false
+                    staleClimbStartedAt = nil
+                    publishEvent("takeoff_aborted", seq: 0, count: 0,
+                                 message: "Auto-climb dihentikan: telemetry ketinggian "
+                                        + "tidak tersedia. Kendalikan drone lewat remote fisik.")
+                    log("Auto-climb dibatalkan — telemetry basi/absen.")
+                }
             } else {
-                // Melambat di bawah 1 m tersisa supaya tidak melampaui target
-                // lalu turun lagi (osilasi).
-                let rate = abs(diff) < 1.0 ? climbSlowRateMps : climbFastRateMps
-                vertical = (diff < 0 ? -1.0 : 1.0) * rate
+                staleClimbStartedAt = nil
+                let diff = targetAltitudeM - snapshot.altitude
+                if abs(diff) <= climbToleranceM {
+                    climbInProgress = false
+                } else {
+                    // Melambat di bawah 1 m tersisa supaya tidak melampaui target
+                    // lalu turun lagi (osilasi).
+                    let rate = abs(diff) < 1.0 ? climbSlowRateMps : climbFastRateMps
+                    vertical = (diff < 0 ? -1.0 : 1.0) * rate
+                }
             }
         } else if let tLat = targetLat, let tLon = targetLon,
-                  let lat = snapshot.latitude, let lon = snapshot.longitude {
+                  let lat = snapshot.latitude, let lon = snapshot.longitude,
+                  // Alasan sama seperti auto-climb: posisi basi membuat drone
+                  // mengejar tempat yang sudah ia tinggalkan. Bedanya di sini
+                  // waypoint TIDAK dibatalkan — begitu telemetry pulih,
+                  // navigasi lanjut sendiri dari posisi terbaru.
+                  snapshot.isFresh(maxAge: telemetryFreshnessTimeout) {
             isControllingFlight = true
             let offset = Geo.localOffsetMeters(fromLat: lat, fromLon: lon, toLat: tLat, toLon: tLon)
             let distance = (offset.east * offset.east + offset.north * offset.north).squareRoot()
