@@ -96,6 +96,21 @@ final class RosBridgeClient {
     /// SELURUH state di bawah hanya boleh disentuh di antrean ini.
     private let queue = DispatchQueue(label: "com.dronestack.bridge")
 
+    /// Antrean TERPISAH khusus lalu lintas WebSocket.
+    ///
+    /// Dulu socket berbagi `queue` dengan ketiga timer (kontrol 10 Hz,
+    /// telemetry 5 Hz, state 2 Hz). Karena antrean itu serial, setiap pesan
+    /// masuk maupun balasan keluar harus MENGANTRE di belakang pekerjaan timer —
+    /// termasuk panggilan DJI SDK di loop kontrol yang bisa melambat sewaktu
+    /// kanal radio sibuk. Akibatnya balasan `service_response` untuk /takeoff
+    /// dan /land kerap lewat dari batas 5 detik dashboard, sehingga muncul
+    /// "menunggu ACK" padahal perintahnya sendiri berhasil.
+    ///
+    /// Sisi Android tidak pernah mengalaminya karena di sana tiap `Timer` punya
+    /// thread sendiri dan java-websocket punya thread pembaca sendiri — jalur
+    /// jaringan tidak pernah bergantung pada selesainya loop kontrol.
+    private let socketQueue = DispatchQueue(label: "com.dronestack.bridge.socket")
+
     // MARK: - State jembatan
 
     private var isRunning = false
@@ -128,7 +143,7 @@ final class RosBridgeClient {
 
     init(flightLink: DJIFlightLink) {
         self.flightLink = flightLink
-        self.socket = RosBridgeSocket(queue: queue)
+        self.socket = RosBridgeSocket(queue: socketQueue)
         self.socket.delegate = self
     }
 
@@ -729,19 +744,28 @@ final class RosBridgeClient {
 
 extension RosBridgeClient: RosBridgeSocketDelegate {
 
+    // Ketiga callback di bawah kini tiba di `socketQueue`, bukan lagi di
+    // `queue`. Semua yang menyentuh state jembatan WAJIB dibungkus
+    // `queue.async` — tanpa itu state yang sama disentuh dari dua antrean
+    // sekaligus, dan balapan seperti itu tidak akan terlihat saat diuji di meja,
+    // hanya di lapangan.
     func socketDidOpen(_ socket: RosBridgeSocket) {
-        isRunning = true
-        advertiseAndSubscribe()
-        startTimers()
-        log("Tersambung ke rosbridge. Topik & service terdaftar.")
-        DispatchQueue.main.async { [weak self] in
+        queue.async { [weak self] in
             guard let self = self else { return }
-            self.delegate?.bridge(self, didChangeConnected: true)
+            self.isRunning = true
+            self.advertiseAndSubscribe()
+            self.startTimers()
+            self.log("Tersambung ke rosbridge. Topik & service terdaftar.")
+            DispatchQueue.main.async {
+                self.delegate?.bridge(self, didChangeConnected: true)
+            }
         }
     }
 
     func socket(_ socket: RosBridgeSocket, didReceiveText text: String) {
-        handleIncoming(text: text)
+        queue.async { [weak self] in
+            self?.handleIncoming(text: text)
+        }
     }
 
     /// FAILSAFE LINK PUTUS.
@@ -754,21 +778,23 @@ extension RosBridgeClient: RosBridgeSocketDelegate {
     /// Memicunya saat drone masih diam di darat hanya akan mengagetkan operator
     /// yang sedang menyiapkan alat.
     func socket(_ socket: RosBridgeSocket, didCloseWith reason: String) {
-        let wasControlling = isControllingFlight
-        isRunning = false
-        isControllingFlight = false
-        stopTimers()
-        log("Koneksi rosbridge putus: \(reason)")
-
-        DispatchQueue.main.async { [weak self] in
+        queue.async { [weak self] in
             guard let self = self else { return }
-            self.delegate?.bridge(self, didChangeConnected: false)
-        }
+            let wasControlling = self.isControllingFlight
+            self.isRunning = false
+            self.isControllingFlight = false
+            self.stopTimers()
+            self.log("Koneksi rosbridge putus: \(reason)")
 
-        guard wasControlling else { return }
-        log("Link terputus saat kontrol aktif — memicu Return-To-Home otomatis.")
-        flightLink.startGoHome { [weak self] success, message in
-            self?.log(success ? message : "RTH otomatis GAGAL: \(message)")
+            DispatchQueue.main.async {
+                self.delegate?.bridge(self, didChangeConnected: false)
+            }
+
+            guard wasControlling else { return }
+            self.log("Link terputus saat kontrol aktif — memicu Return-To-Home otomatis.")
+            self.flightLink.startGoHome { [weak self] success, message in
+                self?.log(success ? message : "RTH otomatis GAGAL: \(message)")
+            }
         }
     }
 }

@@ -99,6 +99,11 @@ final class DJIFlightLink: NSObject {
     private(set) var productModel: String = "-"
     private(set) var isVirtualStickEnabled = false
 
+    /// Status ketersediaan virtual stick yang terakhir DICATAT. Dipakai agar
+    /// perubahannya dilaporkan sekali, bukan 10 kali per detik oleh loop kontrol.
+    /// `true` sebagai nilai awal supaya ketidaktersediaan pertama tetap terlaporkan.
+    private var lastVirtualStickAvailable = true
+
     private var flightController: DJIFlightController? {
         (DJISDKManager.product() as? DJIAircraft)?.flightController
     }
@@ -237,9 +242,33 @@ final class DJIFlightLink: NSObject {
     /// menukar urutan argumen di constructor FlightControlData.
     func sendControl(forward: Double, right: Double, yawRate: Double, verticalRate: Double) {
         guard let fc = flightController, isVirtualStickEnabled else { return }
+
+        // KETERSEDIAAN VIRTUAL STICK TIDAK LAGI MEMBLOKIR PENGIRIMAN.
+        //
+        // Versi sebelumnya: `guard fc.isVirtualStickControlModeAvailable() else
+        // { return }` — perintah dibuang DIAM-DIAM, tanpa log maupun pesan ke
+        // operator. Gejala di lapangan: WASD ditekan, drone diam, dan tidak ada
+        // satu pun petunjuk kenapa. Sisi Android tidak punya penjaga ini sama
+        // sekali (lihat sendVirtualStickFlightControlData di RosBridgeClient.java),
+        // dan justru itulah sebabnya Android terasa lancar pada kondisi yang
+        // membuat iOS tampak mati total.
+        //
+        // Perintah sekarang TETAP dikirim. Kalau SDK memang menolaknya, itu
+        // urusan SDK — bukan alasan bagi jembatan ini untuk membisu. Statusnya
+        // hanya dicatat, dan hanya saat BERUBAH, supaya loop 10 Hz tidak
+        // membanjiri log.
+        //
         // METODE, bukan properti — di ObjC ini `-isVirtualStickControlModeAvailable`
         // yang diimpor Swift sebagai fungsi, jadi tanda kurungnya wajib.
-        guard fc.isVirtualStickControlModeAvailable() else { return }
+        let available = fc.isVirtualStickControlModeAvailable()
+        if available != lastVirtualStickAvailable {
+            lastVirtualStickAvailable = available
+            log(available
+                ? "Virtual stick tersedia kembali — perintah kendali berlaku lagi."
+                : "SDK melaporkan virtual stick TIDAK tersedia. Perintah tetap dikirim, "
+                + "tetapi drone mungkin mengabaikannya. Periksa sakelar mode di remote "
+                + "(harus P) dan pastikan remote tidak sedang mengambil alih kendali.")
+        }
 
         let data = DJIVirtualStickFlightControlData(
             pitch: Float(right),
