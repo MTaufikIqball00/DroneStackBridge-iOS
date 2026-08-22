@@ -254,7 +254,7 @@ Kontrak jalur foto juga diperiksa terhadap `backend_ai/api.py` asli: endpoint,
 nama field multipart (`images`), ambang minimum 4 foto, serta field `job_id` dan
 `detail` pada balasan.
 
-Hasil terakhir: **26 pemeriksaan, 0 gagal**. Ketahanannya diuji dengan tiga
+Hasil terakhir: **27 pemeriksaan, 0 gagal**. Ketahanannya diuji dengan tiga
 kontrol negatif (`stamp_ms` → `stampMs`; tegangan dikirim dalam mV; nama field
 `images` → `photos` dan ambang 4 → 1) — semuanya benar terdeteksi gagal.
 
@@ -280,9 +280,16 @@ Setiap butir ditandai `BEDA DARI ANDROID` di kode pada tempatnya.
 | 7 | **`vx`/`vy` memakai sumbu yang sama dengan `x`/`y` (ENU), `vz` positif ke atas** | Versi Android mencampur: `x`=timur/`y`=utara tapi `vx`=utara/`vy`=timur, dan `vz` positif ke bawah — berlawanan dengan `linear.z` pada `/cmd_vel`. Tidak terlihat di dashboard, tapi menghasilkan grafik yang salah untuk laporan. |
 | 8 | **Foto ditulis ke disk hanya setelah unduhan lengkap** | DJI iOS mengalirkan berkas sebagai potongan `Data` (Android menyerahkan penulisan ke SDK). Kalau ditulis bertahap lalu unduhan putus, tersisa berkas separuh berukuran > 0 yang dianggap "sudah lengkap" pada sinkronisasi berikutnya, lalu ikut terkirim dan menggagalkan stitching. |
 | 9 | **Tombol "Unggah Ulang Tanpa Drone"** | Sisi Android sudah punya `uploadStoredPhotos()` tetapi tidak pernah dipasang di UI. Berguna saat foto sudah ada di HP tapi laptop belum siap — tidak perlu menyalakan drone lagi. |
+| 10 | **`/cmd_vel` diperlakukan sebagai vektor TERNORMALISASI, lalu dikalikan manual_speed / vertical_speed / yaw_rate** | Ini kontrak `/cmd_vel` yang sesungguhnya: `publish_velocity_setpoint()` di `dashboard_bridge_node_px4.py` menjepit tiap sumbu ke ±1 lalu mengalikannya, dan dashboard hanya pernah mengirim ±1/±0,5. Versi Android memakai angka itu apa adanya sebagai m/s dan derajat/detik, sehingga di drone asli "W" berarti 1 m/s dan **"Q" berarti 0,5 derajat/detik** — satu putaran penuh 12 menit, tak bisa dibedakan dari drone yang diam. |
+| 11 | **Virtual Stick dinyalakan ulang otomatis** | Versi Android maupun versi iOS sebelumnya hanya menyalakannya sekali saat Connect. Setelah `productDisconnected()` memadamkan flagnya, tidak ada apa pun yang menghidupkannya lagi: seluruh perintah dashboard dibuang diam-diam sampai operator menekan Disconnect→Connect manual. |
+| 12 | **Goal lebih dekat dari 5 m ditolak** | Radius terima 2 m + galat GPS Spark (±1,5-3 m) membuat target sedekat itu langsung dinyatakan TERCAPAI pada tick pertama: drone tidak bergerak, tapi dashboard mencatat misi SUKSES. |
+| 13 | **Kewenangan kendali diterbitkan sebagai `controlReady`** | Sebelumnya hilangnya kewenangan hanya terlihat di layar HP. Dashboard sekarang menampilkan badge `NO CONTROL` + alasannya, dan menerima event `control_lost`/`control_ready`. |
 
-Butir 5, 6, dan 7 **mengubah angka yang muncul di dashboard/laporan**
-dibanding app Android. Kalau data lama harus tetap sebanding, butir-butir itu
+Butir 5, 6, 7, dan 10 **mengubah angka yang muncul di dashboard/laporan**
+dibanding app Android. Butir 10 yang paling besar dampaknya pada data terbang:
+kecepatan manual naik dari 1 m/s menjadi 3 m/s dan laju yaw dari 0,5 menjadi
+25 derajat/detik, jadi rekaman manual SEBELUM dan SESUDAH perubahan ini tidak
+bisa dicampur dalam satu tabel tanpa keterangan. Kalau data lama harus tetap sebanding, butir-butir itu
 mudah dikembalikan — semuanya terpusat di satu tempat di kode.
 
 ---

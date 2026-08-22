@@ -57,6 +57,38 @@ final class RosBridgeClient {
 
     private let waypointAcceptanceRadiusM = 2.0
     private let waypointCruiseSpeedMps = 3.0
+
+    /// JARAK MINIMUM sebuah goal supaya layak diterbangkan.
+    ///
+    /// Target yang lebih dekat dari ini langsung lolos `distance <= radius
+    /// terima` pada tick PERTAMA: jembatan menerbitkan `mission_complete`,
+    /// drone tidak bergerak satu sentimeter pun, dan dashboard justru melapor
+    /// misi SUKSES. Gejala itulah yang tercatat di uji terbang sebagai
+    /// "Send Goal 2-10 m tidak bergerak".
+    ///
+    /// Menaikkan radius terima TIDAK memperbaikinya — justru memperparah,
+    /// karena target dekat jadi makin gampang dianggap tercapai. Yang benar
+    /// adalah menolak perintahnya secara terbuka, dengan alasan yang terbaca.
+    ///
+    /// Nilainya 5 m: dua kali lipat radius terima, sekaligus jauh di atas
+    /// galat GPS Spark (±1,5-3 m) sehingga "sampai" berarti benar-benar sampai
+    /// dan bukan sekadar derau. Angka yang sama dipakai sebagai titik akhir
+    /// ramp perlambatan di controlTick (`distance / 5.0`).
+    private let minGoalDistanceM = 5.0
+
+    /// PENGALI PERINTAH MANUAL — padanan manual_speed / vertical_speed /
+    /// yaw_rate pada ros2_ws/.../launch/dashboard_bridge.launch.py.
+    ///
+    /// Dashboard mengirim /cmd_vel sebagai vektor TERNORMALISASI (lihat
+    /// handleCmdVel), jadi angka-angka inilah yang menentukan seberapa cepat
+    /// drone asli bergerak saat WASD ditekan. Turunkan di sini — dan hanya di
+    /// sini — bila terasa terlalu agresif untuk lokasi uji yang sempit.
+    private let manualSpeedMps = 3.0
+    private let manualVerticalSpeedMps = 3.0
+    /// 0,9 rad/detik pada launch file ROS = 51,6 derajat/detik. Dibulatkan ke
+    /// 50 supaya angkanya mudah dibaca di laporan.
+    private let manualYawRateDegPerSec = 50.0
+
     private let climbToleranceM = 0.3
     private let climbFastRateMps = 2.0
     private let climbSlowRateMps = 0.5
@@ -129,6 +161,21 @@ final class RosBridgeClient {
     private var cmdYawRate: Double = 0
     private var cmdVertical: Double = 0
     private var lastCmdVelAt: Date?
+
+    /// Kewenangan kendali yang TERAKHIR dilaporkan ke dashboard, dengan
+    /// histeresis (lihat `controlLossReportDelay`). Dipakai oleh field
+    /// `controlReady` di telemetry juga, supaya badge di dashboard tidak
+    /// berkedip 5x per detik mengikuti nilai mentahnya.
+    private var lastReportedControlReady: Bool?
+    private var controlNotReadySince: Date?
+
+    /// Berapa lama kewenangan harus hilang TERUS-MENERUS sebelum dilaporkan.
+    ///
+    /// `isVirtualStickControlModeAvailable()` juga bernilai false selama
+    /// operator menyentuh stik RC — hal yang normal dan berlangsung sekejap.
+    /// Tanpa jeda ini, setiap koreksi kecil dari remote akan memuntahkan
+    /// sepasang event ke dashboard.
+    private let controlLossReportDelay: TimeInterval = 1.5
 
     // Auto-climb setelah takeoff.
     private var targetAltitudeM = 1.0
@@ -251,10 +298,30 @@ final class RosBridgeClient {
     }
 
     /// Konvensi dari dashboard (frontend/components/DroneController.tsx):
-    ///   linear.x  -> maju/mundur (W/S), m/s
-    ///   linear.y  -> kanan/kiri  (D/A), m/s
-    ///   linear.z  -> naik/turun  (R/F), m/s, positif = naik
-    ///   angular.z -> yaw (Q/E), derajat/detik, positif = searah jarum jam
+    ///   linear.x  -> maju/mundur (W/S)
+    ///   linear.y  -> kanan/kiri  (D/A)
+    ///   linear.z  -> naik/turun  (R/F), positif = naik
+    ///   angular.z -> yaw (Q/E), positif = searah jarum jam
+    ///
+    /// NILAINYA TERNORMALISASI (-1..1), BUKAN m/s. Ini kontrak `/cmd_vel` yang
+    /// sesungguhnya, dan sebelumnya jembatan ini salah membacanya.
+    ///
+    /// Buktinya ada di sisi ROS: `publish_velocity_setpoint()` pada
+    /// dashboard_bridge_node_px4.py menjepit tiap sumbu ke ±1 lalu
+    /// MENGALIKANNYA dengan manual_speed / vertical_speed / yaw_rate. Dashboard
+    /// sendiri hanya mengirim ±1 dan ±0.5 (KEY_BINDINGS). Jembatan ini —
+    /// dan sisi Android — dulu memakai angka itu apa adanya sebagai m/s dan
+    /// derajat/detik, sehingga di drone ASLI:
+    ///   W  = 1 m/s        (di simulasi 3,5 m/s)
+    ///   R  = 0,5 m/s
+    ///   Q  = 0,5 DERAJAT per detik — satu putaran penuh butuh 12 menit,
+    ///        tidak bisa dibedakan dari drone yang diam total.
+    /// Itulah sebabnya "WASD tidak berfungsi" sebagian benar: perintahnya
+    /// sampai, besarannya saja yang nyaris nol.
+    ///
+    /// Angka pengalinya sengaja mengikuti tuning lapangan di
+    /// ros2_ws/.../launch/dashboard_bridge.launch.py supaya satu penerbangan
+    /// simulasi dan satu penerbangan asli bisa dibandingkan di laporan.
     ///
     /// Perhatikan linear.y: dashboard memakai "positif = KANAN", berlawanan
     /// dengan konvensi ROS REP-103 (positif = kiri). Yang diikuti di sini adalah
@@ -265,10 +332,13 @@ final class RosBridgeClient {
               let angular = msg["angular"] as? [String: Any]
         else { return }
 
-        cmdForward = doubleValue(linear["x"])
-        cmdRight = doubleValue(linear["y"])
-        cmdVertical = doubleValue(linear["z"])
-        cmdYawRate = doubleValue(angular["z"])
+        // Penjepitan WAJIB dilakukan sebelum dikalikan: tanpa itu satu pesan
+        // rusak (atau klien lain yang salah paham kontrak) bisa memerintahkan
+        // kecepatan berapa pun langsung ke virtual stick.
+        cmdForward = Self.clampUnit(doubleValue(linear["x"])) * manualSpeedMps
+        cmdRight = Self.clampUnit(doubleValue(linear["y"])) * manualSpeedMps
+        cmdVertical = Self.clampUnit(doubleValue(linear["z"])) * manualVerticalSpeedMps
+        cmdYawRate = Self.clampUnit(doubleValue(angular["z"])) * manualYawRateDegPerSec
         lastCmdVelAt = Date()
 
         // Perintah manual membatalkan SELURUH mode otomatis — operator selalu
@@ -349,11 +419,50 @@ final class RosBridgeClient {
             return
         }
 
+        // TOLAK GOAL YANG TERLALU DEKAT — lihat `minGoalDistanceM`.
+        //
+        // Tanpa penjaga ini, target di bawah radius terima langsung dinyatakan
+        // TERCAPAI pada tick pertama: drone tidak bergerak sama sekali, tapi
+        // dashboard menerima `mission_complete` dan mencatat misinya sebagai
+        // selesai. Kegagalan yang menyamar jadi keberhasilan adalah kegagalan
+        // paling mahal di lapangan — operator mengira jalur perintahnya sehat
+        // padahal belum pernah diuji.
+        // (gpsValid di atas sudah menjamin keduanya terisi; guard ini hanya
+        // membuat jaminan itu terbaca oleh compiler.)
+        guard let hereLat = snapshot.latitude, let hereLon = snapshot.longitude else {
+            publishEvent("waypoints_nack", seq: seq, count: 0,
+                         message: "Posisi drone belum diketahui.")
+            return
+        }
+
+        let offset = Geo.localOffsetMeters(fromLat: hereLat, fromLon: hereLon,
+                                           toLat: lat, toLon: lon)
+        let distance = (offset.east * offset.east + offset.north * offset.north).squareRoot()
+        guard distance >= minGoalDistanceM else {
+            publishEvent("waypoints_nack", seq: seq, count: 0,
+                         message: String(format:
+                            "Target hanya %.1f m dari drone — di bawah jarak minimum %.0f m. "
+                          + "Pada jarak sedekat itu drone langsung dianggap sudah sampai "
+                          + "(radius terima %.0f m + galat GPS) dan tidak akan bergerak. "
+                          + "Geser target lebih jauh.",
+                          distance, minGoalDistanceM, waypointAcceptanceRadiusM))
+            return
+        }
+
         targetLat = lat
         targetLon = lon
         waypointSeq = seq
+
+        // Auto-climb menang atas navigasi waypoint di controlTick. Kalau drone
+        // sedang memanjat, perintah ini memang diterima — tapi baru dijalankan
+        // setelah panjatnya selesai. Katakan apa adanya: ACK "navigasi dimulai"
+        // padahal drone masih naik adalah sumber kebingungan yang persis sama
+        // dengan kasus jarak terlalu dekat di atas.
+        let prefix = climbInProgress
+            ? "Waypoint diterima, MENUNGGU auto-climb selesai"
+            : "Waypoint diterima & navigasi dimulai"
         publishEvent("waypoints_ack", seq: seq, count: 1,
-                     message: "1 waypoint diterima via GPS (lat/lon) & navigasi dimulai.")
+                     message: String(format: "%@ — jarak %.1f m (GPS lat/lon).", prefix, distance))
     }
 
     // MARK: - Service
@@ -447,6 +556,46 @@ final class RosBridgeClient {
             socket.send(frame)
         }
         log("[\(event)] seq=\(seq): \(message)")
+    }
+
+    /// Laporkan ke dashboard SETIAP KALI kewenangan kendali berpindah.
+    ///
+    /// Ini pasangan dari field `controlReady` di telemetry: field itu memberi
+    /// KEADAAN sekarang (untuk badge yang selalu terlihat), event ini memberi
+    /// MOMEN dan ALASAN-nya (untuk banner + baris log). Tanpa keduanya,
+    /// satu-satunya jejak hilangnya kewenangan ada di layar HP yang sedang
+    /// dikantongi operator — dan itulah kenapa gejalanya selama ini hanya
+    /// tampak sebagai "drone diam saja".
+    private func reportControlAuthorityIfChanged() {
+        let ready = flightLink.hasControlAuthority
+
+        if ready {
+            controlNotReadySince = nil
+            guard lastReportedControlReady != true else { return }
+            lastReportedControlReady = true
+            publishEvent("control_ready", seq: 0, count: 0,
+                         message: "Kewenangan kendali kembali — perintah dashboard berlaku lagi.")
+            return
+        }
+
+        // Hilang. Tunggu dulu apakah benar-benar menetap sebelum berisik.
+        if controlNotReadySince == nil { controlNotReadySince = Date() }
+        guard let since = controlNotReadySince,
+              Date().timeIntervalSince(since) >= controlLossReportDelay,
+              lastReportedControlReady != false
+        else { return }
+
+        lastReportedControlReady = false
+        publishEvent("control_lost", seq: 0, count: 0,
+                     message: "PERINTAH DASHBOARD TIDAK BERLAKU: jembatan tidak sedang memegang "
+                            + "kendali drone. Periksa sakelar mode remote (harus P), lepaskan "
+                            + "stik RC, dan pastikan pesawat masih tersambung ke HP.")
+    }
+
+    /// Nilai yang dipakai field `controlReady`. Memakai hasil ber-histeresis
+    /// bila sudah ada, dan nilai mentah hanya untuk laporan paling pertama.
+    private func controlReadyForPublish() -> Bool {
+        lastReportedControlReady ?? flightLink.hasControlAuthority
     }
 
     /// Snapshot state frekuensi rendah. TANPA field `event`, sehingga dashboard
@@ -553,6 +702,12 @@ final class RosBridgeClient {
             "gpsValid": snapshot.gpsValid,
             "lat": RosBridgeProtocol.round7(lat),
             "lon": RosBridgeProtocol.round7(lon),
+            // KEWENANGAN KENDALI. false berarti perintah dari dashboard (WASD,
+            // Send Goal, takeoff) tidak akan menggerakkan drone sama sekali,
+            // apa pun yang ditekan operator. Stack ArduPilot/PX4 tidak mengirim
+            // field ini dan dashboard mempertahankan default true — lihat pola
+            // yang sama pada armDisarmSupported di bawah.
+            "controlReady": controlReadyForPublish(),
             // Dashboard MENYEMBUNYIKAN tombol ARM/DISARM saat ini false, karena
             // DJI tidak punya konsep arm terpisah — motor menyala sendiri saat
             // takeoff (lihat DroneController.tsx).
@@ -579,6 +734,17 @@ final class RosBridgeClient {
     ///   auto-climb  >  navigasi waypoint  >  manual /cmd_vel
     private func controlTick() {
         guard isRunning else { return }
+
+        // JARING PENGAMAN KEWENANGAN — dijalankan sebelum apa pun yang lain.
+        //
+        // Selama jembatan hidup, ia HARUS memegang virtual stick. Bila SDK
+        // memadamkannya (paling sering: link RC<->pesawat berkedip sesaat),
+        // panggilan ini merebutnya kembali sendiri. Sebelum ini tidak ada apa
+        // pun yang melakukannya, sehingga seluruh perintah dashboard dibuang
+        // diam-diam sampai operator menekan Disconnect->Connect manual di app.
+        // Murah: langsung no-op begitu kewenangan sudah di tangan.
+        flightLink.ensureVirtualStickArmed()
+        reportControlAuthorityIfChanged()
 
         let snapshot = flightLink.currentSnapshot()
         var forward = 0.0
@@ -716,6 +882,13 @@ final class RosBridgeClient {
 
     private static func nowMillis() -> Int {
         Int((Date().timeIntervalSince1970 * 1000.0).rounded())
+    }
+
+    /// Jepit ke rentang kontrak `/cmd_vel` (-1..1) sebelum dikalikan pengali
+    /// kecepatan. Padanan `clamp(..., -1.0, 1.0)` di publish_velocity_setpoint()
+    /// pada dashboard_bridge_node_px4.py.
+    private static func clampUnit(_ value: Double) -> Double {
+        min(max(value, -1.0), 1.0)
     }
 
     /// Angka dari JSON bisa datang sebagai NSNumber, Double, Int, atau String

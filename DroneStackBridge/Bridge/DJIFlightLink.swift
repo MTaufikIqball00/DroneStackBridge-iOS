@@ -104,6 +104,47 @@ final class DJIFlightLink: NSObject {
     /// `true` sebagai nilai awal supaya ketidaktersediaan pertama tetap terlaporkan.
     private var lastVirtualStickAvailable = true
 
+    /// Apakah jembatan MENGINGINKAN kendali virtual stick saat ini.
+    ///
+    /// Dibedakan dari `isVirtualStickEnabled` (yang berarti "SDK sudah bilang
+    /// ya") karena keduanya bisa berbeda tanpa sepengetahuan siapa pun:
+    /// `productDisconnected()` memadamkan flag SDK, dan sebelum perbaikan ini
+    /// tidak ada apa pun yang menyalakannya kembali. Gejalanya di lapangan:
+    /// satu kedipan link RC<->pesawat (biasa pada Spark) membuat SELURUH
+    /// perintah dashboard dibuang diam-diam di `sendControl`, sementara
+    /// telemetry tetap mengalir sehingga dashboard tampak sehat. Satu-satunya
+    /// pemulihan dulu adalah Disconnect->Connect manual di app.
+    private(set) var virtualStickDesired = false
+
+    /// Kapan percobaan menyalakan ulang virtual stick terakhir dikirim.
+    /// Dibatasi supaya `ensureVirtualStickArmed()` — yang dipanggil dari loop
+    /// kontrol 10 Hz — tidak membanjiri SDK selama kondisi belum pulih.
+    private var lastVirtualStickArmAttempt = Date.distantPast
+    private let virtualStickRearmInterval: TimeInterval = 2.0
+
+    /// Apakah `sendControl` terakhir benar-benar sampai ke SDK. Dipakai untuk
+    /// mencatat transisi diterima<->dibuang sekali, bukan 10 kali per detik.
+    private var lastSendControlAccepted = true
+
+    /// true bila jembatan BENAR-BENAR punya kewenangan menggerakkan drone:
+    /// virtual stick menyala DAN SDK melaporkan mode kontrolnya sedang bisa
+    /// dipakai. Dipublikasikan ke dashboard sebagai field `controlReady` supaya
+    /// kegagalan kewenangan berhenti jadi kegagalan yang diam.
+    var hasControlAuthority: Bool {
+        guard let fc = flightController, isVirtualStickEnabled else { return false }
+        // SELAGI DI DARAT, ketersediaan mode kontrol SENGAJA tidak dilihat.
+        //
+        // `isVirtualStickControlModeAvailable()` juga bernilai false semata
+        // karena pesawat belum terbang. Melaporkannya sebagai "kehilangan
+        // kendali" berarti peringatan merah menyala di dashboard pada SETIAP
+        // persiapan terbang — dan peringatan yang selalu menyala adalah
+        // peringatan yang berhenti dibaca orang, yang justru membatalkan
+        // seluruh gunanya. Di darat, "berwenang" cukup berarti virtual stick
+        // ada di tangan kita.
+        guard currentSnapshot().isFlying else { return true }
+        return fc.isVirtualStickControlModeAvailable()
+    }
+
     private var flightController: DJIFlightController? {
         (DJISDKManager.product() as? DJIAircraft)?.flightController
     }
@@ -191,6 +232,41 @@ final class DJIFlightLink: NSObject {
             return
         }
 
+        applyControlModes(to: fc)
+
+        fc.setVirtualStickModeEnabled(true) { [weak self] error in
+            guard let self = self else { return }
+            if let error = error {
+                self.isVirtualStickEnabled = false
+                self.virtualStickDesired = false
+                self.notifyAvailabilityChanged()
+                completion(false, "Gagal mengaktifkan Virtual Stick: \(error.localizedDescription)")
+                return
+            }
+            // Mode lanjutan membuat drone mengompensasi angin saat hover
+            // (syarat: sinyal GPS baik). Disetel SETELAH virtual stick menyala,
+            // mengikuti urutan yang dipakai sisi Android.
+            fc.isVirtualStickAdvancedModeEnabled = true
+            self.isVirtualStickEnabled = true
+            // Sejak titik ini jembatan bertanggung jawab MENJAGA kewenangan itu
+            // tetap hidup — lihat ensureVirtualStickArmed().
+            self.virtualStickDesired = true
+            self.notifyAvailabilityChanged()
+            completion(true, "Virtual Stick aktif (velocity / body frame).")
+        }
+    }
+
+    /// Menetapkan keempat mode kontrol virtual stick.
+    ///
+    /// Dipisahkan dari `enableVirtualStick` karena harus dipanggil ULANG di
+    /// setiap penyambungan kembali flight controller, bukan hanya sekali saat
+    /// operator menekan Connect: DJI mereset keempatnya ke default begitu FC
+    /// tersambung ulang, dan default `rollPitchControlMode` adalah *Angle*.
+    /// Kalau hanya `setVirtualStickModeEnabled(true)` yang diulang tanpa ini,
+    /// perintah "3.0" yang kita maksud 3 m/s ditafsirkan sebagai kemiringan
+    /// 3 derajat — drone tetap terkendali, tapi dengan aturan yang sama sekali
+    /// lain dari yang diasumsikan seluruh kode ini.
+    private func applyControlModes(to fc: DJIFlightController) {
         fc.rollPitchControlMode = .velocity
         fc.verticalControlMode = .velocity
         fc.yawControlMode = .angularVelocity
@@ -200,26 +276,52 @@ final class DJIFlightLink: NSObject {
         // arah utara. Navigasi waypoint yang bekerja dalam kerangka bumi
         // dikonversi ke kerangka badan lebih dulu; lihat Geo.groundToBody().
         fc.rollPitchCoordinateSystem = .body
+    }
 
+    /// Nyalakan ulang virtual stick bila jembatan masih menginginkannya tetapi
+    /// SDK sudah memadamkannya.
+    ///
+    /// Dipanggil dari dua tempat:
+    ///   1. Loop kontrol 10 Hz (`RosBridgeClient.controlTick`) — jaring pengaman
+    ///      berkala, dibatasi `virtualStickRearmInterval`.
+    ///   2. Callback penyambungan ulang produk/komponen di bawah — jalur cepat,
+    ///      supaya pemulihan tidak menunggu tick berikutnya.
+    ///
+    /// SENGAJA tidak memakai `isVirtualStickControlModeAvailable()` sebagai
+    /// pemicu: nilai itu juga false ketika operator sedang memegang stik RC,
+    /// dan menyalakan ulang berkali-kali selagi pilot mengambil alih hanya
+    /// akan berebut kewenangan. Yang dipulihkan di sini murni keadaan
+    /// "SDK bilang virtual stick padam padahal kita masih memintanya".
+    func ensureVirtualStickArmed() {
+        guard virtualStickDesired, !isVirtualStickEnabled else { return }
+        guard let fc = flightController else { return }
+
+        let now = Date()
+        guard now.timeIntervalSince(lastVirtualStickArmAttempt) >= virtualStickRearmInterval else { return }
+        lastVirtualStickArmAttempt = now
+
+        applyControlModes(to: fc)
         fc.setVirtualStickModeEnabled(true) { [weak self] error in
             guard let self = self else { return }
             if let error = error {
-                self.isVirtualStickEnabled = false
-                completion(false, "Gagal mengaktifkan Virtual Stick: \(error.localizedDescription)")
+                // Tidak fatal: percobaan berikutnya menyusul 2 detik lagi.
+                // Dicatat supaya operator melihat jembatan sedang berusaha,
+                // bukan sekadar diam.
+                self.log("Gagal menyalakan ulang Virtual Stick: \(error.localizedDescription)")
                 return
             }
-            // Mode lanjutan membuat drone mengompensasi angin saat hover
-            // (syarat: sinyal GPS baik). Disetel SETELAH virtual stick menyala,
-            // mengikuti urutan yang dipakai sisi Android.
             fc.isVirtualStickAdvancedModeEnabled = true
             self.isVirtualStickEnabled = true
-            completion(true, "Virtual Stick aktif (velocity / body frame).")
+            self.log("Virtual Stick menyala kembali otomatis setelah link pulih.")
+            self.notifyAvailabilityChanged()
         }
     }
 
     func disableVirtualStick() {
         isVirtualStickEnabled = false
+        virtualStickDesired = false
         flightController?.setVirtualStickModeEnabled(false, withCompletion: nil)
+        notifyAvailabilityChanged()
     }
 
     // MARK: - Perintah terbang
@@ -241,7 +343,26 @@ final class DJIFlightLink: NSObject {
     /// pitch. Sisi Android mencapai hasil yang sama dengan cara berbeda: ia
     /// menukar urutan argumen di constructor FlightControlData.
     func sendControl(forward: Double, right: Double, yawRate: Double, verticalRate: Double) {
-        guard let fc = flightController, isVirtualStickEnabled else { return }
+        guard let fc = flightController, isVirtualStickEnabled else {
+            // Dulu `return` polos, tanpa satu baris log pun. Inilah titik buang
+            // perintah yang paling sering kena di lapangan (lihat
+            // `virtualStickDesired`), dan diamnya itulah yang membuat gejala
+            // "WASD ditekan, drone diam" mustahil didiagnosis dari dashboard.
+            if lastSendControlAccepted {
+                lastSendControlAccepted = false
+                log(virtualStickDesired
+                    ? "Perintah kendali DIBUANG: Virtual Stick padam. Menunggu penyalaan ulang otomatis."
+                    : "Perintah kendali DIBUANG: Virtual Stick belum pernah dinyalakan (tekan Connect).")
+                notifyAvailabilityChanged()
+            }
+            return
+        }
+
+        if !lastSendControlAccepted {
+            lastSendControlAccepted = true
+            log("Perintah kendali diterima lagi oleh SDK.")
+            notifyAvailabilityChanged()
+        }
 
         // KETERSEDIAAN VIRTUAL STICK TIDAK LAGI MEMBLOKIR PENGIRIMAN.
         //
@@ -441,14 +562,21 @@ extension DJIFlightLink: DJISDKManagerDelegate {
         productModel = product?.model ?? "-"
         log("Produk tersambung: \(productModel)")
         attachComponentDelegates()
+        // Pesawat kembali setelah link sempat putus. Kalau jembatan masih
+        // menginginkan kendali, rebut lagi SEKARANG — jangan menunggu operator
+        // sadar sendiri lalu menekan Disconnect->Connect.
+        rearmVirtualStickNow()
         notifyAvailabilityChanged()
     }
 
     func productDisconnected() {
         isProductConnected = false
+        // HANYA flag SDK yang dipadamkan. `virtualStickDesired` SENGAJA
+        // dipertahankan: itulah yang membuat productConnected/componentConnected
+        // di atas tahu bahwa kewenangan harus direbut kembali begitu link pulih.
         isVirtualStickEnabled = false
         productModel = "-"
-        log("Produk terputus.")
+        log("Produk terputus. Virtual Stick padam — akan dinyalakan ulang otomatis saat pesawat kembali.")
         detachComponentDelegates()
         notifyAvailabilityChanged()
     }
@@ -458,7 +586,28 @@ extension DJIFlightLink: DJISDKManagerDelegate {
         // Tanpa memasang ulang delegate di sini, telemetry tidak pernah mengalir
         // pada urutan sambung tertentu.
         attachComponentDelegates()
+        // Inilah momen DJI mereset keempat mode kontrol virtual stick, jadi
+        // inilah momen yang tepat untuk menetapkannya ulang.
+        rearmVirtualStickNow()
         notifyAvailabilityChanged()
+    }
+
+    /// Percobaan penyalaan ulang TANPA menunggu jeda 2 detik — dipakai pada
+    /// event penyambungan, di mana penundaan hanya memperpanjang jendela waktu
+    /// perintah dashboard dibuang percuma.
+    private func rearmVirtualStickNow() {
+        guard virtualStickDesired else { return }
+        // Mode kontrol ditetapkan ulang WALAU flag kita masih menyala.
+        //
+        // Reset yang dilakukan DJI terjadi di sisi PESAWAT dan sama sekali
+        // tidak terlihat dari sini: `isVirtualStickEnabled` tetap true, jadi
+        // ensureVirtualStickArmed() di bawah akan langsung pulang tanpa
+        // memperbaiki apa pun. Kalau dibiarkan, drone tetap "terkendali" tapi
+        // membaca 3.0 sebagai kemiringan 3 derajat, bukan 3 m/s. Penetapan
+        // ulang ini idempoten, jadi aman dilakukan setiap penyambungan.
+        if let fc = flightController { applyControlModes(to: fc) }
+        lastVirtualStickArmAttempt = .distantPast
+        ensureVirtualStickArmed()
     }
 
     func componentDisconnected(withKey key: String?, andIndex index: Int) {

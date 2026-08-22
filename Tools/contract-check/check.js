@@ -282,6 +282,9 @@ const telemetryFixture = {
   lon: 107.6191,
   armDisarmSupported: false,
   advancedFeaturesSupported: false,
+  // Kewenangan kendali jembatan. Sengaja false di fixture: itulah jalur
+  // yang HARUS terlihat di dashboard, dan yang selama ini gagal diam.
+  controlReady: false,
   battery: 87,
 };
 
@@ -400,6 +403,10 @@ check(
 check(
   "advancedFeaturesSupported=false -> RTH/Emergency/Auto Survey disembunyikan",
   vehicle1.advancedFeaturesSupported === false
+);
+check(
+  "controlReady=false -> dashboard menampilkan peringatan NO CONTROL",
+  vehicle1.controlReady === false
 );
 check(
   "stamp_ms terbaca sebagai basis latency (bukan NaN/0)",

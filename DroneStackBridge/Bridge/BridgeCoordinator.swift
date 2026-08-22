@@ -256,6 +256,13 @@ extension BridgeCoordinator: DJIFlightLinkDelegate {
             self.sdkRegistered = link.isRegistered
             self.productConnected = link.isProductConnected
             self.productModel = link.productModel
+            // Indikator "Virtual Stick" di layar harus mengikuti keadaan
+            // SEBENARNYA, bukan hasil satu kali penekanan Connect.
+            // Sejak jembatan bisa kehilangan lalu merebut kembali
+            // kewenangan sendiri, nilai yang dibekukan saat connect()
+            // justru menyesatkan: ia tetap hijau selagi setiap perintah
+            // operator dibuang.
+            self.virtualStickActive = link.isVirtualStickEnabled
         }
     }
 }
